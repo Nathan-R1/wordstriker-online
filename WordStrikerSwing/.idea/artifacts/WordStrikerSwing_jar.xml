@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" name="WordStrikerSwing:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/WordStrikerSwing_jar</output-path>
+    <root id="archive" name="WordStrikerSwing.jar">
+      <element id="module-output" name="WordStrikerSwing" />
+    </root>
+  </artifact>
+</component>
