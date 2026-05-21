@@ -11,7 +11,6 @@ import {
   updateLobbyStatus,
   type LobbyPlayer,
   type GameInvite,
-  type InviteResponse,
 } from '../composables/useLobby'
 
 const router = useRouter()

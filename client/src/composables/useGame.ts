@@ -24,16 +24,17 @@ export function joinGameRoom(
 
   channel.on('presence', { event: 'sync' }, () => {
     const state = channel.presenceState()
-    const peers: GamePeer[] = Object.values(state).flat() as GamePeer[]
+    const peers = Object.values(state).flat() as unknown as GamePeer[]
     callbacks.onPeersUpdate(peers)
   })
 
   channel.on('presence', { event: 'join' }, ({ newPresences }) => {
-    callbacks.onPeerJoin(newPresences[0] as GamePeer)
+    callbacks.onPeerJoin(newPresences[0] as unknown as GamePeer)
   })
 
   channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
-    callbacks.onPeerLeave((leftPresences[0] as GamePeer).userId)
+    const left = leftPresences[0] as unknown as GamePeer
+    callbacks.onPeerLeave(left.userId)
   })
 
   channel.on('broadcast', { event: 'game_message' }, ({ payload }) => {

@@ -1,39 +1,98 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { signInAnon, supabase } from '../composables/useSupabase'
+import { signInAnon } from '../composables/useSupabase'
 import { joinGameRoom, type GamePeer } from '../composables/useGame'
-import type { GameMessage } from '../game/protocol'
+import { loadVerses, getBookName, findVerse, type VerseEntry } from '../game/verses'
+
+interface IncomingVerse {
+  verseId: string
+  book: string
+  chapter: number
+  verse: number
+  text: string
+  timeLeft: number
+  senderId: string
+}
 
 const route = useRoute()
 const router = useRouter()
 const gameId = route.params.gameId as string
 
-const userId = ref('')
-const playerName = ref('')
-const peers = ref<GamePeer[]>([])
-const messages = ref<{ text: string; from: string }[]>([])
-const inputText = ref('')
 const ownUserId = ref('')
+const ownName = ref('')
+const peers = ref<GamePeer[]>([])
+const incomingVerses = ref<IncomingVerse[]>([])
+const scores = ref<Record<string, number>>({})
+const inputText = ref('')
+const inputError = ref('')
+const verses = ref<VerseEntry[]>([])
+const versesLoaded = ref(false)
+const error = ref('')
 
 let room: ReturnType<typeof joinGameRoom> | null = null
+let timerInterval: number | undefined
 
-const opponentName = computed(() => {
-  return peers.value.find(p => p.userId !== ownUserId.value)?.name ?? 'Waiting for opponent...'
-})
+const opponent = computed(() =>
+  peers.value.find(p => p.userId !== ownUserId.value) ?? null
+)
+
+const opponentName = computed(() => opponent.value?.name ?? 'Waiting...')
+
+const myScore = computed(() => scores.value[ownUserId.value] ?? 0)
+const oppScore = computed(() => (opponent.value ? scores.value[opponent.value.userId] ?? 0 : 0))
 
 const isReady = computed(() => peers.value.length >= 2)
 
-function sendChat() {
-  if (!inputText.value.trim() || !room) return
-  const msg: GameMessage = {
-    type: 'fire_word',
-    word: inputText.value.trim(),
-    word_id: crypto.randomUUID(),
-    timestamp: Date.now(),
+function handleSubmit() {
+  const text = inputText.value.trim()
+  if (!text || !room || !versesLoaded.value) return
+  inputError.value = ''
+
+  const book = getBookName(text)
+  if (book) {
+    const matching = incomingVerses.value.filter(
+      v => v.book.toLowerCase() === book.toLowerCase()
+    )
+    if (matching.length === 0) {
+      inputError.value = `No incoming verses from ${book}`
+      inputText.value = ''
+      return
+    }
+    const ids = matching.map(v => v.verseId)
+    incomingVerses.value = incomingVerses.value.filter(v => !ids.includes(v.verseId))
+    const newScore = myScore.value + matching.length
+    scores.value = { ...scores.value, [ownUserId.value]: newScore }
+    room.sendMessage({
+      type: 'game_update',
+      playerId: ownUserId.value,
+      playerScore: newScore,
+    })
+    inputText.value = ''
+    return
   }
-  room.sendMessage(msg)
-  messages.value.push({ text: `[you] ${msg.word}`, from: ownUserId.value })
+
+  const words = text.split(/\s+/).filter(w => w.length > 0)
+  if (words.length < 3) {
+    inputError.value = 'Type at least 3 words to send a verse'
+    return
+  }
+
+  const match = findVerse(text, verses.value)
+  if (!match) {
+    inputError.value = 'Verse not found'
+    return
+  }
+
+  room.sendMessage({
+    type: 'verse_incoming',
+    verseId: crypto.randomUUID(),
+    book: match.b,
+    chapter: match.c,
+    verse: match.v,
+    text: match.t,
+    timeLeft: 10,
+  })
   inputText.value = ''
 }
 
@@ -43,62 +102,285 @@ function leaveGame() {
 }
 
 onMounted(async () => {
-  ownUserId.value = await signInAnon()
-  userId.value = ownUserId.value
-  playerName.value = `Player_${ownUserId.value.slice(0, 4)}`
+  try {
+    ownUserId.value = await signInAnon()
+  } catch {
+    error.value = 'Failed to sign in'
+    return
+  }
+  ownName.value = `Player_${ownUserId.value.slice(0, 4)}`
 
-  room = joinGameRoom(ownUserId.value, playerName.value, gameId, {
-    onPeerJoin: (peer) => {
-      messages.value.push({ text: `${peer.name} joined`, from: 'system' })
-    },
-    onPeerLeave: (peerId) => {
-      messages.value.push({ text: `player left`, from: 'system' })
+  try {
+    verses.value = await loadVerses()
+    versesLoaded.value = true
+  } catch {
+    error.value = 'Failed to load verses'
+    return
+  }
+
+  room = joinGameRoom(ownUserId.value, ownName.value, gameId, {
+    onPeerJoin: () => {},
+    onPeerLeave: () => {
       leaveGame()
     },
     onMessage: (msg, senderId) => {
-      if (msg.type === 'fire_word') {
-        messages.value.push({ text: `[${senderId.slice(0, 4)}] ${msg.word}`, from: senderId })
+      if (senderId === ownUserId.value) return
+      if (msg.type === 'verse_incoming') {
+        incomingVerses.value.push({ ...msg, senderId })
+      } else if (msg.type === 'game_update') {
+        scores.value = { ...scores.value, [msg.playerId]: msg.playerScore }
       }
     },
     onPeersUpdate: (p) => {
       peers.value = p
     },
   })
+
+  timerInterval = setInterval(() => {
+    for (const v of incomingVerses.value) {
+      v.timeLeft--
+    }
+    incomingVerses.value = incomingVerses.value.filter(v => v.timeLeft > 0)
+  }, 1000)
 })
 
 onUnmounted(() => {
+  clearInterval(timerInterval)
   room?.leave()
 })
 </script>
 
 <template>
-  <div class="game">
+  <div v-if="error" class="error">{{ error }}</div>
+  <div v-else class="game">
     <div class="header">
-      <button @click="leaveGame">← Lobby</button>
-      <span>Game: {{ gameId.slice(0, 8) }}...</span>
-      <span v-if="!isReady">⏳ Waiting for opponent...</span>
-      <span v-else>⚔️ Playing vs {{ opponentName }}</span>
-    </div>
-
-    <div class="chat">
-      <div v-for="(m, i) in messages" :key="i" class="msg" :class="{ own: m.from === ownUserId }">
-        {{ m.text }}
+      <button class="leave-btn" @click="leaveGame">← Lobby</button>
+      <div class="scores">
+        <span class="score you">{{ myScore }}</span>
+        <span class="vs">vs</span>
+        <span class="score opponent">{{ oppScore }}</span>
+        <span class="opp-name">{{ opponentName }}</span>
+      </div>
+      <div class="status">
+        <span v-if="!isReady">Waiting for opponent...</span>
       </div>
     </div>
 
-    <div class="input-row">
-      <input v-model="inputText" @keyup.enter="sendChat" placeholder="Type a word..." :disabled="!isReady" />
-      <button @click="sendChat" :disabled="!isReady">Send</button>
+    <div class="verses-list">
+      <div v-if="incomingVerses.length === 0" class="empty">
+        No incoming verses yet
+      </div>
+      <div
+        v-for="v in incomingVerses"
+        :key="v.verseId"
+        class="verse-entry"
+      >
+        <span class="ref">{{ v.book }} {{ v.chapter }}:{{ v.verse }}</span>
+        <span class="text">{{ v.text }}</span>
+        <span class="timer" :class="{ urgent: v.timeLeft <= 3 }">{{ v.timeLeft }}s</span>
+      </div>
+    </div>
+
+    <div class="input-area">
+      <div v-if="inputError" class="input-error">{{ inputError }}</div>
+      <div class="input-row">
+        <input
+          v-model="inputText"
+          @keyup.enter="handleSubmit"
+          placeholder="Type a verse or book name..."
+          :disabled="!isReady"
+          autofocus
+        />
+        <button @click="handleSubmit" :disabled="!isReady">Send</button>
+      </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.game { display: flex; flex-direction: column; height: 100vh; }
-.header { display: flex; gap: 1rem; align-items: center; padding: 0.5rem; border-bottom: 1px solid #ccc; }
-.chat { flex: 1; overflow-y: auto; padding: 0.5rem; }
-.msg { padding: 0.25rem 0; }
-.own { color: #2563eb; }
-.input-row { display: flex; padding: 0.5rem; border-top: 1px solid #ccc; }
-.input-row input { flex: 1; margin-right: 0.5rem; }
+.game {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  font-family: var(--sans);
+}
+
+.error {
+  padding: 2rem;
+  text-align: center;
+  color: #ef4444;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.leave-btn {
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+}
+
+.scores {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  justify-content: center;
+}
+
+.score {
+  font-family: var(--mono);
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+.score.you {
+  color: var(--accent);
+}
+
+.score.opponent {
+  color: var(--text-h);
+}
+
+.vs {
+  color: var(--text);
+  font-size: 0.9rem;
+}
+
+.opp-name {
+  color: var(--text);
+  font-size: 0.85rem;
+  margin-left: 0.25rem;
+}
+
+.status {
+  min-width: 10rem;
+  text-align: right;
+  color: var(--text);
+  font-size: 0.85rem;
+}
+
+.verses-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem 1rem;
+}
+
+.empty {
+  text-align: center;
+  color: var(--text);
+  padding: 3rem 1rem;
+  font-style: italic;
+}
+
+.verse-entry {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  margin-bottom: 0.25rem;
+  border-radius: 6px;
+  background: var(--code-bg);
+  animation: slide-in 0.2s ease-out;
+}
+
+@keyframes slide-in {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.ref {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--accent);
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 8rem;
+}
+
+.text {
+  flex: 1;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  color: var(--text-h);
+}
+
+.timer {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--text);
+  flex-shrink: 0;
+  min-width: 2rem;
+  text-align: right;
+}
+
+.timer.urgent {
+  color: #ef4444;
+  font-weight: 600;
+}
+
+.input-area {
+  flex-shrink: 0;
+  padding: 0.5rem 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.input-error {
+  color: #ef4444;
+  font-size: 0.85rem;
+  margin-bottom: 0.25rem;
+  padding: 0.25rem 0;
+}
+
+.input-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.input-row input {
+  flex: 1;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 0.95rem;
+  background: var(--bg);
+  color: var(--text-h);
+  outline: none;
+}
+
+.input-row input:focus {
+  border-color: var(--accent);
+}
+
+.input-row button {
+  padding: 0.5rem 1rem;
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.input-row button:hover:not(:disabled) {
+  background: var(--accent);
+  color: #fff;
+}
+
+.input-row button:disabled,
+.input-row input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
 </style>

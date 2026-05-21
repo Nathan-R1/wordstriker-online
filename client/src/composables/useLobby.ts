@@ -35,16 +35,16 @@ export function joinLobby(
 
   channel.on('presence', { event: 'sync' }, () => {
     const state = channel.presenceState()
-    const players: LobbyPlayer[] = Object.values(state).flat() as LobbyPlayer[]
+    const players = Object.values(state).flat() as unknown as LobbyPlayer[]
     callbacks.onPlayersUpdate(players)
   })
 
   channel.on('presence', { event: 'join' }, ({ newPresences }) => {
-    callbacks.onPlayerJoin?.(newPresences[0] as LobbyPlayer)
+    callbacks.onPlayerJoin?.(newPresences[0] as unknown as LobbyPlayer)
   })
 
   channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
-    callbacks.onPlayerLeave?.(leftPresences[0] as LobbyPlayer)
+    callbacks.onPlayerLeave?.(leftPresences[0] as unknown as LobbyPlayer)
   })
 
   channel.subscribe(async (status) => {
