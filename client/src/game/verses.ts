@@ -41,7 +41,7 @@ function normalizeForMatch(text: string): string {
 
 export async function loadVerses(): Promise<void> {
   if (verseIndex) return
-  const res = await fetch('/verses.json')
+  const res = await fetch(`${import.meta.env.BASE_URL}verses.json`)
   const raw: VerseEntry[] = await res.json()
   verseIndex = raw.map(v => ({
     ...v,
