@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { signInAnon } from '../composables/useSupabase'
 import { joinGameRoom, type GamePeer } from '../composables/useGame'
-import { loadVerses, getBookName, findVerse, type VerseEntry } from '../game/verses'
+import { loadVerses, getBookName, findVerse } from '../game/verses'
 
 interface IncomingVerse {
   verseId: string
@@ -26,9 +26,17 @@ const incomingVerses = ref<IncomingVerse[]>([])
 const scores = ref<Record<string, number>>({})
 const inputText = ref('')
 const inputError = ref('')
-const verses = ref<VerseEntry[]>([])
 const versesLoaded = ref(false)
 const error = ref('')
+
+interface FeedEntry {
+  playerId: string
+  book: string
+  chapter: number
+  verse: number
+}
+
+const feed = ref<FeedEntry[]>([])
 
 let room: ReturnType<typeof joinGameRoom> | null = null
 let timerInterval: number | undefined
@@ -63,10 +71,18 @@ function handleSubmit() {
     incomingVerses.value = incomingVerses.value.filter(v => !ids.includes(v.verseId))
     const newScore = myScore.value + matching.length
     scores.value = { ...scores.value, [ownUserId.value]: newScore }
+    const clears: FeedEntry[] = matching.map(v => ({
+      playerId: ownUserId.value,
+      book: v.book,
+      chapter: v.chapter,
+      verse: v.verse,
+    }))
+    feed.value.push(...clears)
     room.sendMessage({
       type: 'game_update',
       playerId: ownUserId.value,
       playerScore: newScore,
+      clears,
     })
     inputText.value = ''
     return
@@ -78,7 +94,7 @@ function handleSubmit() {
     return
   }
 
-  const match = findVerse(text, verses.value)
+  const match = findVerse(text)
   if (!match) {
     inputError.value = 'Verse not found'
     return
@@ -111,7 +127,7 @@ onMounted(async () => {
   ownName.value = `Player_${ownUserId.value.slice(0, 4)}`
 
   try {
-    verses.value = await loadVerses()
+    await loadVerses()
     versesLoaded.value = true
   } catch {
     error.value = 'Failed to load verses'
@@ -129,6 +145,7 @@ onMounted(async () => {
         incomingVerses.value.push({ ...msg, senderId })
       } else if (msg.type === 'game_update') {
         scores.value = { ...scores.value, [msg.playerId]: msg.playerScore }
+        feed.value.push(...msg.clears.map(c => ({ ...c, playerId: msg.playerId })))
       }
     },
     onPeersUpdate: (p) => {
@@ -166,18 +183,30 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <div class="verses-list">
-      <div v-if="incomingVerses.length === 0" class="empty">
-        No incoming verses yet
+    <div class="main-content">
+      <div class="verses-list">
+        <div v-if="incomingVerses.length === 0" class="empty">
+          No incoming verses yet
+        </div>
+        <div
+          v-for="v in incomingVerses"
+          :key="v.verseId"
+          class="verse-entry"
+        >
+          <span class="text">{{ v.text }}</span>
+          <span class="timer" :class="{ urgent: v.timeLeft <= 3 }">{{ v.timeLeft }}s</span>
+        </div>
       </div>
-      <div
-        v-for="v in incomingVerses"
-        :key="v.verseId"
-        class="verse-entry"
-      >
-        <span class="ref">{{ v.book }} {{ v.chapter }}:{{ v.verse }}</span>
-        <span class="text">{{ v.text }}</span>
-        <span class="timer" :class="{ urgent: v.timeLeft <= 3 }">{{ v.timeLeft }}s</span>
+
+      <div class="feed-panel">
+        <div class="feed-title">Feed</div>
+        <div v-if="feed.length === 0" class="empty">No clears yet</div>
+        <div v-for="(entry, i) in feed" :key="i" class="feed-entry">
+          <span class="who" :class="{ me: entry.playerId === ownUserId }">
+            {{ entry.playerId === ownUserId ? 'You' : 'Them' }}
+          </span>
+          <span class="ref">({{ entry.book }} {{ entry.chapter }}:{{ entry.verse }})</span>
+        </div>
       </div>
     </div>
 
@@ -265,17 +294,68 @@ onUnmounted(() => {
   font-size: 0.85rem;
 }
 
+.main-content {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
 .verses-list {
   flex: 1;
   overflow-y: auto;
   padding: 0.5rem 1rem;
 }
 
+.feed-panel {
+  width: 260px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  padding: 0.5rem;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.feed-title {
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 0.25rem 0.5rem;
+  margin-bottom: 0.25rem;
+}
+
+.feed-entry {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding: 0.25rem 0.5rem;
+  font-size: 0.85rem;
+  animation: slide-in 0.2s ease-out;
+}
+
+.feed-entry .who {
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.feed-entry .who.me {
+  color: var(--accent);
+}
+
+.feed-entry .ref {
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--text);
+}
+
 .empty {
   text-align: center;
   color: var(--text);
-  padding: 3rem 1rem;
+  padding: 2rem 0.5rem;
   font-style: italic;
+  font-size: 0.85rem;
 }
 
 .verse-entry {
@@ -298,15 +378,6 @@ onUnmounted(() => {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-.ref {
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  color: var(--accent);
-  white-space: nowrap;
-  flex-shrink: 0;
-  min-width: 8rem;
 }
 
 .text {

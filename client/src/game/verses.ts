@@ -24,13 +24,29 @@ export interface VerseEntry {
   t: string
 }
 
-let cachedVerses: VerseEntry[] | null = null
+interface IndexedVerse extends VerseEntry {
+  normalized: string
+}
 
-export async function loadVerses(): Promise<VerseEntry[]> {
-  if (cachedVerses) return cachedVerses
+let verseIndex: IndexedVerse[] | null = null
+
+function normalizeForMatch(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[[\]'"]/g, '')
+    .replace(/[^a-z0-9\s]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+export async function loadVerses(): Promise<void> {
+  if (verseIndex) return
   const res = await fetch('/verses.json')
-  cachedVerses = (await res.json()) as VerseEntry[]
-  return cachedVerses
+  const raw: VerseEntry[] = await res.json()
+  verseIndex = raw.map(v => ({
+    ...v,
+    normalized: normalizeForMatch(v.t),
+  }))
 }
 
 export function getBookName(input: string): string | null {
@@ -45,21 +61,12 @@ export function isBookName(input: string): boolean {
   return getBookName(input) !== null
 }
 
-function normalizeForCompare(text: string): string {
-  return text
-    .toLowerCase()
-    .replace(/[[\]]/g, '')
-    .replace(/\s+/g, ' ')
-    .trim()
-}
-
-export function findVerse(input: string, verses: VerseEntry[]): VerseEntry | null {
-  const normalized = normalizeForCompare(input)
-  if (normalized.length === 0) return null
-  for (const v of verses) {
-    if (normalizeForCompare(v.t).startsWith(normalized)) {
-      return v
-    }
+export function findVerse(input: string): VerseEntry | null {
+  if (!verseIndex) return null
+  const needle = normalizeForMatch(input)
+  if (needle.length === 0) return null
+  for (const v of verseIndex) {
+    if (v.normalized.includes(needle)) return v
   }
   return null
 }

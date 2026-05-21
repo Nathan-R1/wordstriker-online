@@ -33,7 +33,7 @@ function invitePlayer(target: LobbyPlayer) {
   })
   sentInvites.value.add(target.userId)
 
-  updateLobbyStatus(lobbyChannel, 'in_game', gameId)
+  updateLobbyStatus(lobbyChannel, myId.value, myName.value, 'in_game', gameId)
 
   router.push(`/game/${gameId}`)
 }
@@ -49,7 +49,7 @@ function acceptInvite() {
     accepted: true,
   })
 
-  updateLobbyStatus(lobbyChannel, 'in_game', invite.gameId)
+  updateLobbyStatus(lobbyChannel, myId.value, myName.value, 'in_game', invite.gameId)
   incomingInvite.value = null
   router.push(`/game/${invite.gameId}`)
 }

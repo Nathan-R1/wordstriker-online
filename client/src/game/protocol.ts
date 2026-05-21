@@ -16,10 +16,17 @@ export const VerseIncomingSchema = z.object({
   timeLeft: z.number().int().positive(),
 })
 
+export const ClearEntrySchema = z.object({
+  book: z.string(),
+  chapter: z.number().int().positive(),
+  verse: z.number().int().positive(),
+})
+
 export const GameUpdateSchema = z.object({
   type: z.literal('game_update'),
   playerId: z.string(),
   playerScore: z.number().int().min(0),
+  clears: z.array(ClearEntrySchema),
 })
 
 export const GameMessageSchema = z.discriminatedUnion('type', [

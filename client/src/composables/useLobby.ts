@@ -62,10 +62,12 @@ export function joinLobby(
 
 export function updateLobbyStatus(
   channel: RealtimeChannel,
+  userId: string,
+  name: string,
   status: LobbyPlayer['status'],
   gameId?: string
 ) {
-  channel.track({ status, gameId } as Partial<LobbyPlayer>)
+  channel.track({ userId, name, status, gameId } satisfies LobbyPlayer)
 }
 
 export function sendInvite(channel: RealtimeChannel, invite: GameInvite) {
