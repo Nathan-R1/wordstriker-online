@@ -61,6 +61,27 @@ export function isBookName(input: string): boolean {
   return getBookName(input) !== null
 }
 
+export type BookInput = {
+  book: string
+  chapter?: number
+  verse?: number
+}
+
+export function parseBookInput(input: string): BookInput | null {
+  const book = getBookName(input)
+  if (!book) return null
+  const rest = input.slice(book.length)
+  const chVer = rest.match(/^\s*(\d+):(\d+)/)
+  if (chVer) return { book, chapter: Number(chVer[1]), verse: Number(chVer[2]) }
+  const ch = rest.match(/^\s*(\d+)/)
+  if (ch) return { book, chapter: Number(ch[1]) }
+  return { book }
+}
+
+export function verseTimeLimit(wordCount: number): number {
+  return Math.max(10, 60 - (wordCount - 3) * 5)
+}
+
 export function findVerse(input: string): VerseEntry | null {
   if (!verseIndex) return null
   const needle = normalizeForMatch(input)

@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { signInAnon } from '../composables/useSupabase'
 import { joinGameRoom, type GamePeer } from '../composables/useGame'
-import { loadVerses, getBookName, findVerse } from '../game/verses'
+import { loadVerses, findVerse, verseTimeLimit, parseBookInput } from '../game/verses'
 
 interface IncomingVerse {
   verseId: string
@@ -57,19 +57,43 @@ function handleSubmit() {
   if (!text || !room || !versesLoaded.value) return
   inputError.value = ''
 
-  const book = getBookName(text)
-  if (book) {
-    const matching = incomingVerses.value.filter(
-      v => v.book.toLowerCase() === book.toLowerCase()
-    )
+  const parsed = parseBookInput(text)
+  if (parsed) {
+    let matching: IncomingVerse[]
+    let points: number
+    let label: string
+
+    if (parsed.verse) {
+      matching = incomingVerses.value.filter(
+        v => v.book.toLowerCase() === parsed.book.toLowerCase()
+          && v.chapter === parsed.chapter
+          && v.verse === parsed.verse
+      )
+      points = 5
+      label = `${parsed.book} ${parsed.chapter}:${parsed.verse}`
+    } else if (parsed.chapter) {
+      matching = incomingVerses.value.filter(
+        v => v.book.toLowerCase() === parsed.book.toLowerCase()
+          && v.chapter === parsed.chapter
+      )
+      points = 2
+      label = `${parsed.book} ${parsed.chapter}`
+    } else {
+      matching = incomingVerses.value.filter(
+        v => v.book.toLowerCase() === parsed.book.toLowerCase()
+      )
+      points = 1
+      label = parsed.book
+    }
+
     if (matching.length === 0) {
-      inputError.value = `No incoming verses from ${book}`
+      inputError.value = `No incoming verses from ${label}`
       inputText.value = ''
       return
     }
     const ids = matching.map(v => v.verseId)
     incomingVerses.value = incomingVerses.value.filter(v => !ids.includes(v.verseId))
-    const newScore = myScore.value + matching.length
+    const newScore = myScore.value + matching.length * points
     scores.value = { ...scores.value, [ownUserId.value]: newScore }
     const clears: FeedEntry[] = matching.map(v => ({
       playerId: ownUserId.value,
@@ -107,7 +131,7 @@ function handleSubmit() {
     chapter: match.c,
     verse: match.v,
     text: match.t,
-    timeLeft: 10,
+    timeLeft: verseTimeLimit(words.length),
   })
   inputText.value = ''
 }
