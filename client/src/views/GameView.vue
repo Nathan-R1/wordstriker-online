@@ -379,6 +379,7 @@ onUnmounted(() => {
     <!-- Verse reference popup -->
     <VerseReferenceModal
       :show="showPopup"
+      :mode="popupMode"
       @confirm="popupMode === 'send' ? handleSendRef($event) : handleAttemptRef($event)"
       @cancel="showPopup = false"
     />

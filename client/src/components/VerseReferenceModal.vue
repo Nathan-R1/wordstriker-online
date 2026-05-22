@@ -13,6 +13,7 @@ import {
 
 const props = defineProps<{
   show: boolean
+  mode?: 'send' | 'attempt'
 }>()
 
 const emit = defineEmits<{
@@ -302,7 +303,7 @@ onUnmounted(() => {
                 {{ v }}
               </button>
             </div>
-            <div v-if="verseText" class="verse-preview">
+            <div v-if="verseText && props.mode !== 'attempt'" class="verse-preview">
               <div class="verse-preview-ref">{{ preview }}</div>
               <div class="verse-preview-text">{{ verseText }}</div>
             </div>
