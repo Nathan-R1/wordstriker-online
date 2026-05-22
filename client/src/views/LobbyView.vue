@@ -67,7 +67,7 @@ function declineInvite() {
 
 onMounted(async () => {
   myId.value = await signInAnon()
-  myName.value = `Player_${myId.value.slice(0, 4)}`
+  myName.value = `Player_${myId.value.replace(/\D/g, '').slice(0, 4)}`
 
   lobbyChannel = joinLobby(myId.value, myName.value, {
     onPlayersUpdate: (p) => {

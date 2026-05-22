@@ -1,6 +1,9 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from './useSupabase'
 
+const PLAYER_NAME_RE = /^Player_\d+$/
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 export type LobbyPlayer = {
   userId: string
   name: string
@@ -22,6 +25,37 @@ export type InviteResponse = {
   accepted: boolean
 }
 
+function isValidPlayer(data: unknown): data is LobbyPlayer {
+  if (typeof data !== 'object' || data === null) return false
+  const d = data as Record<string, unknown>
+  if (typeof d.userId !== 'string') return false
+  if (typeof d.name !== 'string') return false
+  if (typeof d.status !== 'string') return false
+  if (!PLAYER_NAME_RE.test(d.name)) return false
+  if (d.status !== 'looking' && d.status !== 'in_game') return false
+  return true
+}
+
+function isValidInvite(data: unknown): data is GameInvite {
+  if (typeof data !== 'object' || data === null) return false
+  const d = data as Record<string, unknown>
+  if (typeof d.gameId !== 'string' || !UUID_RE.test(d.gameId)) return false
+  if (typeof d.hostName !== 'string' || !PLAYER_NAME_RE.test(d.hostName)) return false
+  if (typeof d.hostId !== 'string' || !UUID_RE.test(d.hostId)) return false
+  if (typeof d.targetId !== 'string' || !UUID_RE.test(d.targetId)) return false
+  return true
+}
+
+function isValidInviteResponse(data: unknown): data is InviteResponse {
+  if (typeof data !== 'object' || data === null) return false
+  const d = data as Record<string, unknown>
+  if (typeof d.gameId !== 'string' || !UUID_RE.test(d.gameId)) return false
+  if (typeof d.joinerId !== 'string' || !UUID_RE.test(d.joinerId)) return false
+  if (typeof d.joinerName !== 'string' || !PLAYER_NAME_RE.test(d.joinerName)) return false
+  if (typeof d.accepted !== 'boolean') return false
+  return true
+}
+
 export function joinLobby(
   userId: string,
   playerName: string,
@@ -35,16 +69,22 @@ export function joinLobby(
 
   channel.on('presence', { event: 'sync' }, () => {
     const state = channel.presenceState()
-    const players = Object.values(state).flat() as unknown as LobbyPlayer[]
+    const players = (Object.values(state).flat() as unknown[]).filter(isValidPlayer)
     callbacks.onPlayersUpdate(players)
   })
 
   channel.on('presence', { event: 'join' }, ({ newPresences }) => {
-    callbacks.onPlayerJoin?.(newPresences[0] as unknown as LobbyPlayer)
+    const valid = (newPresences as unknown[]).filter(isValidPlayer)
+    if (valid.length > 0) {
+      callbacks.onPlayerJoin?.(valid[0])
+    }
   })
 
   channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
-    callbacks.onPlayerLeave?.(leftPresences[0] as unknown as LobbyPlayer)
+    if (leftPresences.length > 0) {
+      const left = leftPresences[0] as unknown as LobbyPlayer
+      callbacks.onPlayerLeave?.(left)
+    }
   })
 
   channel.subscribe(async (status) => {
@@ -79,7 +119,11 @@ export function sendInvite(channel: RealtimeChannel, invite: GameInvite) {
 }
 
 export function listenForInvites(channel: RealtimeChannel, cb: (invite: GameInvite) => void) {
-  channel.on('broadcast', { event: 'game_invite' }, ({ payload }) => cb(payload as GameInvite))
+  channel.on('broadcast', { event: 'game_invite' }, ({ payload }) => {
+    if (isValidInvite(payload)) {
+      cb(payload)
+    }
+  })
 }
 
 export function sendInviteResponse(channel: RealtimeChannel, response: InviteResponse) {
@@ -94,7 +138,9 @@ export function listenForInviteResponses(
   channel: RealtimeChannel,
   cb: (response: InviteResponse) => void
 ) {
-  channel.on('broadcast', { event: 'game_invite_response' }, ({ payload }) =>
-    cb(payload as InviteResponse)
-  )
+  channel.on('broadcast', { event: 'game_invite_response' }, ({ payload }) => {
+    if (isValidInviteResponse(payload)) {
+      cb(payload)
+    }
+  })
 }

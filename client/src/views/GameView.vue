@@ -141,13 +141,18 @@ function leaveGame() {
 }
 
 onMounted(async () => {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(gameId)) {
+    error.value = 'Invalid game ID'
+    return
+  }
+
   try {
     ownUserId.value = await signInAnon()
   } catch {
     error.value = 'Failed to sign in'
     return
   }
-  ownName.value = `Player_${ownUserId.value.slice(0, 4)}`
+  ownName.value = `Player_${ownUserId.value.replace(/\D/g, '').slice(0, 4)}`
 
   try {
     await loadVerses()

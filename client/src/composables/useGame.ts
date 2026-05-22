@@ -3,6 +3,8 @@ import { supabase } from './useSupabase'
 import type { GameMessage } from '../game/protocol'
 import { parseGameMessage } from '../game/protocol'
 
+const PLAYER_NAME_RE = /^Player_\d+$/
+
 export type GamePeer = {
   userId: string
   name: string
@@ -15,6 +17,15 @@ export type GameCallbacks = {
   onPeersUpdate: (peers: GamePeer[]) => void
 }
 
+function isValidPeer(data: unknown): data is GamePeer {
+  if (typeof data !== 'object' || data === null) return false
+  const d = data as Record<string, unknown>
+  if (typeof d.userId !== 'string') return false
+  if (typeof d.name !== 'string') return false
+  if (!PLAYER_NAME_RE.test(d.name)) return false
+  return true
+}
+
 export function joinGameRoom(
   userId: string,
   playerName: string,
@@ -25,17 +36,22 @@ export function joinGameRoom(
 
   channel.on('presence', { event: 'sync' }, () => {
     const state = channel.presenceState()
-    const peers = Object.values(state).flat() as unknown as GamePeer[]
+    const peers = (Object.values(state).flat() as unknown[]).filter(isValidPeer)
     callbacks.onPeersUpdate(peers)
   })
 
   channel.on('presence', { event: 'join' }, ({ newPresences }) => {
-    callbacks.onPeerJoin(newPresences[0] as unknown as GamePeer)
+    const valid = (newPresences as unknown[]).filter(isValidPeer)
+    if (valid.length > 0) {
+      callbacks.onPeerJoin(valid[0])
+    }
   })
 
   channel.on('presence', { event: 'leave' }, ({ leftPresences }) => {
-    const left = leftPresences[0] as unknown as GamePeer
-    callbacks.onPeerLeave(left.userId)
+    if (leftPresences.length > 0) {
+      const left = leftPresences[0] as unknown as GamePeer
+      callbacks.onPeerLeave(left.userId)
+    }
   })
 
   channel.on('broadcast', { event: 'game_message' }, ({ payload }) => {
