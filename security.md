@@ -1,4 +1,10 @@
-# Security Review: WordStriker Architecture Plan
+# Security Review: WordStriker Online
+
+Architecture: Vue 3 SPA + Supabase Realtime (broadcast + presence) + anonymous auth + client-side Zod validation.
+
+No authoritative server — game logic runs in two browsers communicating through Supabase channels.
+
+---
 
 ## CIA Triad Assessment
 
@@ -6,29 +12,29 @@
 
 | Risk | Severity | Detail |
 |---|---|---|
-| API key in client bundle | High | `VITE_ABLY_API_KEY` is embedded in compiled JS. Anyone can extract it and connect to Ably with your account. Current scope limits damage to `room:* subscribe+publish`. |
-| No end-to-end encryption | Medium | Ably can read all game messages. For a word game this is low-sensitivity, but worth noting. |
-| Room ID brute-force | **Critical** | If `room_id` generation is weak (e.g. `Math.random().toString(36).slice(2,8)` ~2M combinations), an attacker can enumerate active rooms and spectate or inject messages. |
-| Lobby presence visibility | Medium | Anyone can call `presence.get("lobby")` and see `{ name, room_id }` of every open game. |
-| No authentication | **Critical** | No login, no session, no identity binding. Any client with the API key can join any room. |
+| Supabase anon key in client bundle | Low | `VITE_SUPABASE_ANON_KEY` is embedded in compiled JS. This is a public identifier by design — it's safe because there are no DB tables with RLS. The key only enables Realtime pub/sub and anonymous auth (which is intentionally open). |
+| No end-to-end encryption | Medium | Supabase can read all game messages. For a casual friend-to-friend word game this is acceptable, but worth noting. |
+| Room ID brute-force | Low | Room IDs use `crypto.randomUUID()` (122 bits of entropy). Brute-force is infeasible. |
+| Lobby presence visibility | Low | Anyone on the shared `lobby` channel can see player names/statuses. Names are `Player_NNNN` (numeric-only), no personal info. |
+| Anonymous auth — no binding | Medium | Users authenticate anonymously — no persistent identity. A player can trivially create a new session. Acceptable for the casual game model. |
 
 ### Integrity
 
 | Risk | Severity | Detail |
 |---|---|---|
-| No authoritative game state | **Critical** | Game logic runs entirely in two browsers with no server arbitration. A malicious client can forge any message: `game_over`, `health_update: { health: 0 }`, false `hit` responses, etc. |
-| No message signing | High | Messages are not signed or sequenced. A man-in-the-middle Ably client (same room) can replay captured messages or inject arbitrary valid-format messages. |
-| State machine bypass | Medium | Layer 3 (state machine gate) prevents illegal transitions, but a client can send `health_update` that reduces opponent health to 0 in a single frame — the state machine would accept it (health 0-100 is in range). |
-| Word list poisoning | High | `game_init.word_list` validation uses `regex(/^[a-zA-Z]+$/)` per word — but the host controls the word list. They could send all 1-letter words, giving themselves an impossible-to-miss advantage. |
+| No authoritative game state | **Critical** | Both clients run their own copy of game logic with no server arbitration. A modified client can forge any broadcast message: fake `verse_incoming`, inflated `game_update` scores, forged clears. |
+| No message signing | High | Messages are not signed or sequenced. A client connected to the same channel can replay captured messages or inject arbitrary valid-format messages within the session window. |
+| Forged reference clears | Medium | `game_update.clears` are now filtered through `isValidRef()` — clears for non-existent references are dropped. However, a modified client can still claim any real KJV verse as a clear, even one never received. |
+| Forged verse send | Medium | `verse_incoming` messages are validated against the KJV index via `isValidRef()` — only real verse references pass. But a modified client can send any real verse at any time (no turn order enforced). |
 
 ### Availability
 
 | Risk | Severity | Detail |
 |---|---|---|
-| No per-client rate limiting at Ably | High | Client-side throttle (Layer 1) is trivially bypassable. Ably's account-level limit (500 msg/s) is the only hard cap. A malicious client can saturate the account and deny service to all players. |
-| Ably free tier limits | Medium | 500 msgs/s, 200 concurrent connections shared across all users. A targeted DoS could exhaust this. |
-| No abuse monitoring | High | Zero logging or alerting on malicious behavior. You won't know you're under attack. |
-| Room-id squatting | Medium | Attacker can create rooms with predictable IDs, occupying them and preventing legitimate games. |
+| Supabase free tier limits | Medium | 200 concurrent connections, 2 million messages/month per project. A targeted DoS from a single modified client could exhaust limits. |
+| No per-client rate limiting | High | Supabase provides project-level rate limits but no per-connection enforcement. A modified client can flood the channel with messages. |
+| Lobby presence storms | Low | Presence syncs to all subscribed clients. A client rapidly connecting/disconnecting could cause presence churn but Supabase handles this gracefully. |
+| No abuse monitoring | High | Zero logging or alerting on malicious behavior. No audit trail. |
 
 ---
 
@@ -36,72 +42,90 @@
 
 ### A01: Broken Access Control — **FAIL**
 
-No access control exists. Any client with the API key can:
-- Subscribe to any `room:*` channel (and thus any active game)
-- Publish to any `room:*` channel
-- Read lobby presence data
-- Join a game unsolicited
+No access control beyond channel name obscurity:
+- Anyone who knows the 36-char `gameId` can subscribe to `game:<gameId>`, see all broadcasts, and send messages.
+- The `lobby` channel is fully open — any anon user can join, see presence, send invites.
+- No per-user authorization for any operation.
 
-**Remediation:** At minimum, pair the room channel with a shared secret (the room code). The client should know the room code before subscribing. Even better: a lightweight token server that issues short-lived Ably tokens bound to specific room IDs.
+**Acceptance:** The `gameId` is a 122-bit random UUID generated by `crypto.randomUUID()`. Guessing another game's ID is infeasible. This is a "security through unguessable identifiers" model — sufficient for casual friend-to-friend games.
+
+**Edge case:** When player A sends an invite, they navigate to `/game/<gameId>` immediately. If player B declines and player A is now alone in a game room, player B could still manually navigate to `/game/<gameId>` and join. This is blocked at the UI level (no button to do so), but not at the channel level.
 
 ### A02: Cryptographic Failures — **PASS with notes**
 
-- TLS in transit (Ably enforces this)
-- No E2E encryption — Ably sees plaintext game messages (acceptable for a word game)
-- No secrets stored — acceptable for this threat model
+- TLS in transit (Supabase enforces this)
+- No E2E encryption — Supabase sees plaintext game messages (acceptable for a word game)
+- `crypto.randomUUID()` used for all ID generation — cryptographically strong
+- No secrets stored in the bundle (anon key is public-by-design)
 
-### A03: Injection — **PARTIAL FAIL**
+### A03: Injection — **PARTIAL FAIL** (improved)
 
-- `fire_word.word` properly restricted to `/^[a-zA-Z]+$/` — strong
-- Canvas rendering eliminates HTML injection
-- **Several unvalidated string fields:**
-  - `game_open.host` (lobby) — no Zod schema at all
-  - `game_over.winner` — typed as `z.string()` with no length or character limits
-  - `game_init.player_id` — typed as `z.string()` with no constraints
-  - `game_over.stats.*` — `words_typed`, `accuracy`, `duration_sec` all use bare `z.number()` without bounds
+All game messages run through Zod `parseGameMessage()` validation with max-length constraints. Additional layers:
 
-These fields, if ever rendered to DOM (e.g. lobby shows host name, game over screen shows winner), are injection vectors.
+| Layer | What it validates | Where |
+|---|---|---|
+| Lobby presence | `name` matches `/^Player_\d+$/`, `status` is `looking\|in_game` | `useLobby.ts` — runtime filter |
+| Lobby game invites | `gameId`, `hostId`, `targetId` match UUID pattern. `hostName` matches `Player_\d+`. | `useLobby.ts` — `isValidInvite()` |
+| Lobby invite responses | `gameId`, `joinerId` match UUID. `joinerName` matches `Player_\d+`. `accepted` is boolean. | `useLobby.ts` — `isValidInviteResponse()` |
+| Game presence | `name` matches `/^Player_\d+$/` | `useGame.ts` — `isValidPeer()` |
+| All game messages | Zod discriminatedUnion via `parseGameMessage()`. String fields have `max(30)`, `max(100)`, `max(2000)`, `max(64)` constraints. | `protocol.ts` |
+| Incoming verses | `isValidRef()` — book/chapter/verse must exist in KJV index | `GameView.vue` |
+| Game updates | `clears` entries filtered through `isValidRef()` — non-existent refs dropped | `GameView.vue` |
+| Route params | `gameId` validated as UUID before mounting game view | `GameView.vue` |
+
+**Only remaining string-field injection risks:**
+- `gameId` in the URL bar — validated as UUID, rejected otherwise
+- No user-controlled strings reach the DOM without validation
 
 ### A04: Insecure Design — **FAIL**
 
-The fundamental design flaw: **there is no trusted authority.** The game protocol implicitly trusts both clients to:
-- Report their own health truthfully
-- Generate correct hit/miss results
-- Follow the game loop in order
-- Maintain game timer
+The fundamental design flaw remains: **there is no trusted authority.** The game protocol trusts both clients to:
+- Send only verses that they actually received (no turn enforcement)
+- Report accurate scores in `game_update`
+- Follow any implicit turn order
 
-A forked client breaks all of these. This is the biggest architectural risk.
+A modified client can:
+1. Send any KJV verse at any time (no "turn" system)
+2. Claim they cleared any KJV verse, even one never sent to them
+3. Send `game_update` with inflated scores
+
+This is the biggest architectural risk. **Accepted** for the casual friend-to-friend model. Fixing it would require a server-side relay that arbitrates game state — out of scope for a static SPA.
 
 ### A05: Security Misconfiguration — **PASS**
 
-API key scope is well-designed. No other config risks identified.
+Supabase anon key is public-by-design (no RLS-bypassable data at risk). No admin keys or secrets exposed.
 
 ### A06: Vulnerable & Outdated Components — **PASS with notes**
 
 Standard npm supply chain risk. Mitigated by:
-- Minimal dependency surface
-- `npm audit` / Dependabot in CI
+- Minimal dependency surface (Vue 3, Supabase JS client, Zod)
+- Lockfile (`package-lock.json`) ensures deterministic installs
 - No runtime server to exploit
 
-### A07: Identification & Authentication Failures — **FAIL**
+### A07: Identification & Authentication Failures — **PASS with notes**
 
-- No user identity at all
-- `clientId` is ephemeral, client-generated, and forgeable
-- No rate limiting tied to identity
-- No reputation system
-- No way to ban/block abusive players
+**Improved from previous assessment:** Supabase anonymous auth (`signInAnonymously()`) provides:
+- A stable `userId` per session (cached in memory, persists across page reloads)
+- Rate-limited auth endpoint (Supabase free tier: ~30 req/min)
+- No login screen required
+
+**Remaining issues:**
+- Any anon user can connect — no reputation, no ban capability
+- User can trivially create a new anonymous session (clear cache/incognito)
+- No identity binding to a real account
 
 ### A08: Software & Data Integrity — **PASS**
 
-Static site on GitHub Pages is tamper-proof at the server level. npm supply chain is standard risk.
+Static site deployed to GitHub Pages via SHA-pinned action. No database to corrupt. npm supply chain risk is standard.
 
 ### A09: Security Logging & Monitoring — **FAIL**
 
-- No logging of invalid messages, flooding attempts, or abuse patterns
+- Invalid messages are logged to `console.warn` (client-side only, invisible to developers)
+- No server-side logging of abuse patterns
 - No alerting
 - No audit trail
 
-While acceptable for an MVP, this should have a note about productionization.
+**Acceptable for MVP.** A WebSocket relay server would enable server-side monitoring.
 
 ### A10: SSRF — **N/A**
 
@@ -113,30 +137,27 @@ No server.
 
 ### Profanity / Nasty Words
 
-| Vector | Risk |
+| Vector | Status |
 |---|---|
-| Game words (`fire_word.word`) | Allowed by `/^[a-zA-Z]+$/` — profanity passes. Rendered to Canvas. |
-| Host names (`game_open.host`) | No validation at all. If rendered in lobby UI, any string displays. |
-| Winner name (`game_over.winner`) | No validation. Rendered on game-over screen. |
-| Player IDs (`game_init.player_id`) | No validation. |
-
-A client could send profane words via `fire_word` — they'd render in the opponent's Canvas. Not an XSS risk (Canvas is safe) but a content moderation concern.
-
-**Remediation:** Add a profanity filter (or at least a blocklist) for user-visible strings. The game word dictionary should be pre-approved (drawn from a curated word list, not user input).
+| Player names | **Mitigated** — format is `Player_NNNN` (numeric-only), validated at runtime. Any non-conforming name is filtered from the lobby display. |
+| Book names | **Mitigated** — come from the KJV book enum (66 entries). Cannot contain arbitrary text. |
+| Verse text | **Mitigated** — verse text is no longer sent over the wire. Receivers look up KJV text locally by reference. |
+| Incoming broadcasts | **Mitigated** — all user-visible strings (names, book names) are validated against strict patterns before display. |
 
 ### Replay Attacks
 
-Messages have no sequence numbers, nonces, or timestamps with tolerance windows. A captured `hit` or `health_update` could be replayed to affect game state. Low likelihood in practice (room channels are ephemeral), but architecturally absent.
+Messages have no sequence numbers or nonces. However, Supabase Realtime channels are ephemeral (no message history). A captured message can only be replayed:
+- Within the same active session (while both clients are connected)
+- By another client who has joined the same channel
+
+In practice this requires real-time access to the channel, which itself requires the `gameId`. Combined with `crypto.randomUUID()` entropy, replay is a negligible vector.
 
 ### Room ID Entropy
 
-The plan says "generate a random room_id (e.g. `abc123`)" — this example is only 6 alphanumeric chars. If generated with `Math.random()` (weak RNG), an attacker can:
-
-- Enumerate ~50K active room IDs in 6 minutes at 140 req/s
-- Join games uninvited
-- Spam/flood active games
-
-**Remediation:** Use `crypto.randomUUID()` (36 chars) or at minimum 16+ chars of `crypto.getRandomValues()`.
+**Fixed.** All game IDs use `crypto.randomUUID()`:
+- 122 bits of entropy
+- Generated by the browser's CSPRNG
+- Validated on receipt (UUID format regex)
 
 ---
 
@@ -144,20 +165,18 @@ The plan says "generate a random room_id (e.g. `abc123`)" — this example is on
 
 | Category | Grade | Key Fix Needed |
 |---|---|---|
-| Confidentiality | C | Room ID entropy, API in client bundle, no auth |
-| Integrity | D | No authoritative game server, no message signing |
-| Availability | D | No server-side rate limiting, no abuse monitoring |
-| Access Control | F | Any API key holder can join any room |
-| Injection | B+ | Most vectors covered, 4 unvalidated string fields |
-| Authentication | F | Zero identity/trust infrastructure |
-| Logging/Monitoring | F | None |
+| Confidentiality | B | Anon key in bundle accepted. No E2E (acceptable). Room entropy is strong. |
+| Integrity | D | No authoritative game server remains the core risk. `isValidRef()` and Zod mitigate forged content but not forged scores. |
+| Availability | D | No per-client rate limiting. No abuse monitoring. |
+| Access Control | C- | Channel access gated only by UUID — stronger than before but still no auth. Acceptable for friend games. |
+| Injection | B | Multiple validation layers added. Remaining risk: nothing enforces turn order or score honesty. |
+| Authentication | C | Anonymous auth with cached sessions is a reasonable middle ground. No persistent identity. |
+| Logging/Monitoring | F | None. |
 
 ## Top 3 Highest-Impact Fixes
 
-1. **Authoritative game server (or hybrid)** — Even a lightweight relay server that validates game state transitions, rate-limits per client, and signs messages would fix ~70% of the critical issues. The current trust-every-client model is the root cause of most CIA failures.
+1. **Authoritative game server (or relay)** — Even a lightweight WebSocket relay that validates game state transitions and rate-limits per client would fix ~70% of the critical issues. Currently out of scope for a static SPA.
 
-2. **Room-level access control** — Either a token server issues per-room credentials, or the room code itself gates channel access. Combine with high-entropy room IDs (`crypto.randomUUID()`).
+2. **No additional short-term fixes recommended** for the current threat model. The game is designed for casual friend-to-friend play where both parties are trusted. The validation layers added (Zod, `isValidRef()`, name/status filtering, UUID format checks) block most non-trivial abuse vectors.
 
-3. **Server-side rate limiting** — The client-side throttle is decorative. A 50-line Cloudflare Worker that issues Ably tokens with per-client rate caps transforms availability from D to B.
-
-Without these, the game works in a trustful environment (friends playing each other), but is trivially exploitable by any technically capable player.
+3. **Server-side rate limiting** — If Supabase usage grows, a Cloudflare Worker or similar proxy could issue per-connection rate caps. Not needed for the current scale.
