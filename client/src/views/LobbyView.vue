@@ -55,6 +55,11 @@ function acceptInvite() {
   router.push(`/game/${invite.gameId}`)
 }
 
+function startSP() {
+  const gameId = crypto.randomUUID()
+  router.push(`/game/${gameId}?mode=sp`)
+}
+
 function declineInvite() {
   if (!lobbyChannel || !incomingInvite.value) return
   sendInviteResponse(lobbyChannel, {
@@ -120,6 +125,8 @@ onUnmounted(() => {
       </li>
     </ul>
 
+    <button class="sp-btn" @click="startSP">Single Player</button>
+
     <div v-if="incomingInvite" class="invite-popup">
       <p>{{ incomingInvite.hostName }} invites you to a game</p>
       <button @click="acceptInvite">Accept</button>
@@ -141,6 +148,26 @@ onUnmounted(() => {
 }
 .invite-popup button {
   margin: 0 0.25rem;
+}
+
+.sp-btn {
+  display: block;
+  margin: 1rem auto 0;
+  padding: 0.7rem 2rem;
+  border: 1px solid rgba(201, 168, 76, 0.4);
+  border-radius: 10px;
+  background: rgba(201, 168, 76, 0.12);
+  color: #c9a84c;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.15s;
+}
+
+.sp-btn:hover {
+  background: rgba(201, 168, 76, 0.2);
+  box-shadow: 0 0 16px rgba(201, 168, 76, 0.15);
 }
 
 .no-connection {

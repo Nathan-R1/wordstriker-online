@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { signInAnon } from '../composables/useSupabase'
 import { joinGameRoom, type GamePeer } from '../composables/useGame'
-import { loadVerses, getVerseText, isValidRef, verseTimeLimit } from '../game/verses'
+import { loadVerses, getRandomVerse, getVerseText, isValidRef, verseTimeLimit } from '../game/verses'
 import IncomingVerseCard from '../components/IncomingVerseCard.vue'
 import VerseReferenceModal from '../components/VerseReferenceModal.vue'
 
@@ -33,6 +33,7 @@ interface FeedEntry {
 const route = useRoute()
 const router = useRouter()
 const gameId = route.params.gameId as string
+const isSp = computed(() => route.query.mode === 'sp')
 
 const ownUserId = ref('')
 const ownName = ref('')
@@ -51,17 +52,18 @@ const sentToast = ref('')
 
 let room: ReturnType<typeof joinGameRoom> | null = null
 let timerInterval: number | undefined
+let aiTimer: number | undefined
 
 const opponent = computed(() =>
   peers.value.find(p => p.userId !== ownUserId.value) ?? null
 )
 
-const opponentName = computed(() => opponent.value?.name ?? 'Empty Lobby')
+const opponentName = computed(() => isSp.value ? 'AI' : opponent.value?.name ?? 'Empty Lobby')
 
 const myScore = computed(() => scores.value[ownUserId.value] ?? 0)
 const oppScore = computed(() => (opponent.value ? scores.value[opponent.value.userId] ?? 0 : 0))
 
-const isReady = computed(() => peers.value.length >= 2)
+const isReady = computed(() => isSp.value || peers.value.length >= 2)
 const expandedVerse = computed(() =>
   incomingVerses.value.find(v => v.verseId === expandedVerseId.value) ?? null
 )
@@ -200,6 +202,24 @@ function leaveGame() {
   router.push('/')
 }
 
+function addAiVerse() {
+  const r = getRandomVerse()
+  if (!r) return
+  const verseId = crypto.randomUUID()
+  const wordCount = r.text.split(/\s+/).length
+  incomingVerses.value.push({
+    verseId,
+    book: r.book,
+    chapter: r.chapter,
+    verse: r.verse,
+    text: r.text,
+    timeLeft: verseTimeLimit(wordCount),
+    senderId: 'ai',
+    progress: 0,
+  })
+  updateFeedEntry(verseId, r.book, r.chapter, r.verse, 0, ownUserId.value, verseTimeLimit(wordCount))
+}
+
 onMounted(async () => {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(gameId)) {
     error.value = 'Invalid game ID'
@@ -207,7 +227,11 @@ onMounted(async () => {
   }
 
   try {
-    ownUserId.value = await signInAnon()
+    if (isSp.value) {
+      ownUserId.value = crypto.randomUUID()
+    } else {
+      ownUserId.value = await signInAnon()
+    }
   } catch {
     error.value = 'Failed to sign in'
     return
@@ -221,35 +245,6 @@ onMounted(async () => {
     error.value = 'Failed to load verses'
     return
   }
-
-  room = joinGameRoom(ownUserId.value, ownName.value, gameId, {
-    onPeerJoin: () => {},
-    onPeerLeave: () => {},
-    onMessage: (msg, senderId) => {
-      if (senderId === ownUserId.value) return
-      if (msg.type === 'verse_incoming') {
-        if (!isValidRef(msg.book, msg.chapter, msg.verse)) return
-        incomingVerses.value.push({
-          ...msg,
-          text: getVerseText(msg.book, msg.chapter, msg.verse) ?? '',
-          senderId,
-          progress: 0,
-        })
-        updateFeedEntry(msg.verseId, msg.book, msg.chapter, msg.verse, 0, ownUserId.value, msg.timeLeft)
-      } else if (msg.type === 'game_update') {
-        scores.value = { ...scores.value, [msg.playerId]: msg.playerScore }
-        const valid = msg.clears.filter(c => isValidRef(c.book, c.chapter, c.verse))
-        for (const c of valid) {
-          updateFeedEntry(c.verseId, c.book, c.chapter, c.verse, c.progress ?? 4, msg.playerId)
-        }
-      }
-    },
-    onPeersUpdate: (p) => {
-      const me = p.find(peer => peer.userId === ownUserId.value)
-      const firstOther = p.find(peer => peer.userId !== ownUserId.value)
-      peers.value = [me, firstOther].filter(Boolean) as GamePeer[]
-    },
-  })
 
   timerInterval = setInterval(() => {
     for (const v of incomingVerses.value) {
@@ -299,10 +294,46 @@ onMounted(async () => {
     }
     incomingVerses.value = incomingVerses.value.filter(v => v.timeLeft > 0 || v.resolved)
   }, 1000)
+
+  if (isSp.value) {
+    addAiVerse()
+    aiTimer = setInterval(addAiVerse, 5000)
+    return
+  }
+
+  room = joinGameRoom(ownUserId.value, ownName.value, gameId, {
+    onPeerJoin: () => {},
+    onPeerLeave: () => {},
+    onMessage: (msg, senderId) => {
+      if (senderId === ownUserId.value) return
+      if (msg.type === 'verse_incoming') {
+        if (!isValidRef(msg.book, msg.chapter, msg.verse)) return
+        incomingVerses.value.push({
+          ...msg,
+          text: getVerseText(msg.book, msg.chapter, msg.verse) ?? '',
+          senderId,
+          progress: 0,
+        })
+        updateFeedEntry(msg.verseId, msg.book, msg.chapter, msg.verse, 0, ownUserId.value, msg.timeLeft)
+      } else if (msg.type === 'game_update') {
+        scores.value = { ...scores.value, [msg.playerId]: msg.playerScore }
+        const valid = msg.clears.filter(c => isValidRef(c.book, c.chapter, c.verse))
+        for (const c of valid) {
+          updateFeedEntry(c.verseId, c.book, c.chapter, c.verse, c.progress ?? 4, msg.playerId)
+        }
+      }
+    },
+    onPeersUpdate: (p) => {
+      const me = p.find(peer => peer.userId === ownUserId.value)
+      const firstOther = p.find(peer => peer.userId !== ownUserId.value)
+      peers.value = [me, firstOther].filter(Boolean) as GamePeer[]
+    },
+  })
 })
 
 onUnmounted(() => {
   clearInterval(timerInterval)
+  clearInterval(aiTimer)
   room?.leave()
 })
 </script>
@@ -317,11 +348,11 @@ onUnmounted(() => {
       <div class="scores">
         <span class="score you">{{ myScore }}</span>
         <span class="vs">vs</span>
-        <span class="score opponent">{{ oppScore }}</span>
+        <span v-if="!isSp" class="score opponent">{{ oppScore }}</span>
         <span class="opp-name">{{ opponentName }}</span>
       </div>
       <div class="header-right">
-        <span v-if="!isReady" class="waiting">Waiting…</span>
+        <span v-if="!isReady && !isSp" class="waiting">Waiting…</span>
         <button class="feed-toggle" @click="showFeed = !showFeed" title="Toggle feed">
           {{ showFeed ? '✕' : '📋' }}
         </button>
@@ -331,7 +362,7 @@ onUnmounted(() => {
     <!-- Main area -->
     <div class="main">
       <div class="verses-area">
-        <div v-if="!isReady" class="placeholder">
+        <div v-if="!isReady && !isSp" class="placeholder">
           Waiting for opponent to join…
         </div>
         <div v-else-if="incomingVerses.length === 0" class="placeholder">
@@ -374,7 +405,7 @@ onUnmounted(() => {
         <div v-if="sentToast" class="sent-toast">{{ sentToast }}</div>
       </Transition>
       <div class="buttons-row">
-        <button
+        <button v-if="!isSp"
           class="btn btn-send"
           :disabled="!isReady"
           @click="sendVerse"

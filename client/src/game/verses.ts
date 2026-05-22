@@ -138,6 +138,12 @@ export async function loadVerses(): Promise<void> {
   }
 }
 
+export function getRandomVerse(): { book: string; chapter: number; verse: number; text: string } | null {
+  if (!verseIndex || verseIndex.length === 0) return null
+  const entry = verseIndex[Math.floor(Math.random() * verseIndex.length)]
+  return { book: entry.b, chapter: entry.c, verse: entry.v, text: entry.t }
+}
+
 export function getVerseText(book: string, chapter: number, verse: number): string | undefined {
   return textMap.get(refKey(book, chapter, verse))
 }
