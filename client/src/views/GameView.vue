@@ -39,8 +39,6 @@ const incomingVerses = ref<IncomingVerse[]>([])
 const scores = ref<Record<string, number>>({})
 const versesLoaded = ref(false)
 const error = ref('')
-const opponentLeft = ref(false)
-
 const feed = ref<FeedEntry[]>([])
 const expandedVerseId = ref<string | null>(null)
 const showPopup = ref(false)
@@ -56,7 +54,7 @@ const opponent = computed(() =>
   peers.value.find(p => p.userId !== ownUserId.value) ?? null
 )
 
-const opponentName = computed(() => opponent.value?.name ?? 'Waiting...')
+const opponentName = computed(() => opponent.value?.name ?? 'Empty Lobby')
 
 const myScore = computed(() => scores.value[ownUserId.value] ?? 0)
 const oppScore = computed(() => (opponent.value ? scores.value[opponent.value.userId] ?? 0 : 0))
@@ -217,9 +215,7 @@ onMounted(async () => {
 
   room = joinGameRoom(ownUserId.value, ownName.value, gameId, {
     onPeerJoin: () => {},
-    onPeerLeave: () => {
-      opponentLeft.value = true
-    },
+    onPeerLeave: () => {},
     onMessage: (msg, senderId) => {
       if (senderId === ownUserId.value) return
       if (msg.type === 'verse_incoming') {
@@ -240,7 +236,9 @@ onMounted(async () => {
       }
     },
     onPeersUpdate: (p) => {
-      peers.value = p
+      const me = p.find(peer => peer.userId === ownUserId.value)
+      const firstOther = p.find(peer => peer.userId !== ownUserId.value)
+      peers.value = [me, firstOther].filter(Boolean) as GamePeer[]
     },
   })
 
@@ -296,13 +294,6 @@ onUnmounted(() => {
 
 <template>
   <div v-if="error" class="error-state">{{ error }}</div>
-
-  <div v-else-if="opponentLeft" class="game">
-    <div class="header">
-      <button class="back-btn" @click="leaveGame">← Lobby</button>
-      <div class="status-text">Opponent has left the game</div>
-    </div>
-  </div>
 
   <div v-else class="game">
     <!-- Header -->
@@ -398,7 +389,7 @@ onUnmounted(() => {
 .game {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100dvh;
   background: #0f0f1a;
   color: #e8e0d0;
   font-family: var(--sans, system-ui, sans-serif);
