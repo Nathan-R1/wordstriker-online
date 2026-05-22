@@ -3,7 +3,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { signInAnon } from '../composables/useSupabase'
 import { joinGameRoom, type GamePeer } from '../composables/useGame'
-import { loadVerses, findVerse, verseTimeLimit, parseBookInput } from '../game/verses'
+import { loadVerses, findVerse, verseTimeLimit, parseBookInput, getVerseText, isValidRef } from '../game/verses'
 
 interface IncomingVerse {
   verseId: string
@@ -130,7 +130,6 @@ function handleSubmit() {
     book: match.b,
     chapter: match.c,
     verse: match.v,
-    text: match.t,
     timeLeft: verseTimeLimit(words.length),
   })
   inputText.value = ''
@@ -166,10 +165,12 @@ onMounted(async () => {
     onMessage: (msg, senderId) => {
       if (senderId === ownUserId.value) return
       if (msg.type === 'verse_incoming') {
-        incomingVerses.value.push({ ...msg, senderId })
+        if (!isValidRef(msg.book, msg.chapter, msg.verse)) return
+        incomingVerses.value.push({ ...msg, text: getVerseText(msg.book, msg.chapter, msg.verse) ?? '', senderId })
       } else if (msg.type === 'game_update') {
         scores.value = { ...scores.value, [msg.playerId]: msg.playerScore }
-        feed.value.push(...msg.clears.map(c => ({ ...c, playerId: msg.playerId })))
+        const valid = msg.clears.filter(c => isValidRef(c.book, c.chapter, c.verse))
+        feed.value.push(...valid.map(c => ({ ...c, playerId: msg.playerId })))
       }
     },
     onPeersUpdate: (p) => {

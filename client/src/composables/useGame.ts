@@ -1,6 +1,7 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
 import { supabase } from './useSupabase'
 import type { GameMessage } from '../game/protocol'
+import { parseGameMessage } from '../game/protocol'
 
 export type GamePeer = {
   userId: string
@@ -38,7 +39,12 @@ export function joinGameRoom(
   })
 
   channel.on('broadcast', { event: 'game_message' }, ({ payload }) => {
-    callbacks.onMessage(payload.msg as GameMessage, payload.senderId)
+    const msg = parseGameMessage(payload.msg)
+    if (!msg) {
+      console.warn('[Game] Dropping invalid message', payload.msg)
+      return
+    }
+    callbacks.onMessage(msg, payload.senderId)
   })
 
   channel.subscribe(async (status) => {

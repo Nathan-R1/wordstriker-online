@@ -1,30 +1,32 @@
 import { z } from 'zod'
 
+const PlayerId = z.string().max(100)
+const BookName = z.string().max(30)
+
 export const PlayerReadySchema = z.object({
   type: z.literal('player_ready'),
-  playerId: z.string(),
-  playerName: z.string(),
+  playerId: PlayerId,
+  playerName: z.string().max(30),
 })
 
 export const VerseIncomingSchema = z.object({
   type: z.literal('verse_incoming'),
-  verseId: z.string(),
-  book: z.string(),
+  verseId: z.string().max(64),
+  book: BookName,
   chapter: z.number().int().positive(),
   verse: z.number().int().positive(),
-  text: z.string(),
   timeLeft: z.number().int().positive(),
 })
 
 export const ClearEntrySchema = z.object({
-  book: z.string(),
+  book: BookName,
   chapter: z.number().int().positive(),
   verse: z.number().int().positive(),
 })
 
 export const GameUpdateSchema = z.object({
   type: z.literal('game_update'),
-  playerId: z.string(),
+  playerId: PlayerId,
   playerScore: z.number().int().min(0),
   clears: z.array(ClearEntrySchema),
 })

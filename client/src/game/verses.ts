@@ -30,6 +30,12 @@ interface IndexedVerse extends VerseEntry {
 
 let verseIndex: IndexedVerse[] | null = null
 
+const textMap = new Map<string, string>()
+
+function refKey(book: string, chapter: number, verse: number): string {
+  return `${book}|${chapter}|${verse}`
+}
+
 function normalizeForMatch(text: string): string {
   return text
     .toLowerCase()
@@ -47,6 +53,17 @@ export async function loadVerses(): Promise<void> {
     ...v,
     normalized: normalizeForMatch(v.t),
   }))
+  for (const v of raw) {
+    textMap.set(refKey(v.b, v.c, v.v), v.t)
+  }
+}
+
+export function getVerseText(book: string, chapter: number, verse: number): string | undefined {
+  return textMap.get(refKey(book, chapter, verse))
+}
+
+export function isValidRef(book: string, chapter: number, verse: number): boolean {
+  return textMap.has(refKey(book, chapter, verse))
 }
 
 export function getBookName(input: string): string | null {
