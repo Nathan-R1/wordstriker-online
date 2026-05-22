@@ -14,6 +14,7 @@ import {
 } from '../composables/useLobby'
 
 const router = useRouter()
+const serverConnected = ref(true)
 const players = ref<LobbyPlayer[]>([])
 const myId = ref('')
 const myName = ref('')
@@ -66,8 +67,15 @@ function declineInvite() {
 }
 
 onMounted(async () => {
-  myId.value = await signInAnon()
+  try {
+    myId.value = await signInAnon()
+  } catch {
+    serverConnected.value = false
+    myId.value = crypto.randomUUID()
+  }
   myName.value = `Player_${myId.value.replace(/\D/g, '').slice(0, 4)}`
+
+  if (!serverConnected.value) return
 
   lobbyChannel = joinLobby(myId.value, myName.value, {
     onPlayersUpdate: (p) => {
@@ -95,6 +103,7 @@ onUnmounted(() => {
 
 <template>
   <div>
+    <div v-if="!serverConnected" class="no-connection">No server connection</div>
     <h1>Lobby</h1>
     <p>You: {{ myName }} ({{ myId.slice(0, 8) }}...)</p>
 
@@ -132,5 +141,17 @@ onUnmounted(() => {
 }
 .invite-popup button {
   margin: 0 0.25rem;
+}
+
+.no-connection {
+  text-align: center;
+  padding: 0.5rem 1rem;
+  margin-bottom: 0.75rem;
+  border: 1px solid rgba(201, 168, 76, 0.3);
+  border-radius: 8px;
+  background: rgba(201, 168, 76, 0.1);
+  color: #c9a84c;
+  font-size: 0.85rem;
+  font-weight: 600;
 }
 </style>

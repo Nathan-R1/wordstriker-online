@@ -1,5 +1,5 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
-import { supabase } from './useSupabase'
+import { getClient } from './useSupabase'
 
 const PLAYER_NAME_RE = /^Player_\d+$/
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -65,7 +65,7 @@ export function joinLobby(
     onPlayerLeave?: (p: LobbyPlayer) => void
   }
 ): RealtimeChannel {
-  const channel = supabase.channel('lobby')
+  const channel = getClient().channel('lobby')
 
   channel.on('presence', { event: 'sync' }, () => {
     const state = channel.presenceState()

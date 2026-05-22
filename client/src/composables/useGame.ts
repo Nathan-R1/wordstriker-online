@@ -1,5 +1,5 @@
 import type { RealtimeChannel } from '@supabase/supabase-js'
-import { supabase } from './useSupabase'
+import { getClient } from './useSupabase'
 import type { GameMessage } from '../game/protocol'
 import { parseGameMessage } from '../game/protocol'
 
@@ -32,7 +32,7 @@ export function joinGameRoom(
   gameId: string,
   callbacks: GameCallbacks
 ): { channel: RealtimeChannel; sendMessage: (msg: GameMessage) => void; leave: () => void } {
-  const channel = supabase.channel(`game:${gameId}`)
+  const channel = getClient().channel(`game:${gameId}`)
 
   channel.on('presence', { event: 'sync' }, () => {
     const state = channel.presenceState()
