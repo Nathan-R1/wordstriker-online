@@ -94,6 +94,11 @@ export function joinLobby(
         name: playerName,
         status: 'looking',
       } satisfies LobbyPlayer)
+
+      // Re-read presence after track — no sync fires for our own track
+      const state = channel.presenceState()
+      const players = (Object.values(state).flat() as unknown[]).filter(isValidPlayer)
+      callbacks.onPlayersUpdate(players)
     }
   })
 

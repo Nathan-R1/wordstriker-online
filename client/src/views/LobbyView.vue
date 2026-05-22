@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { signInAnon } from '../composables/useSupabase'
 import {
@@ -86,6 +86,10 @@ onMounted(async () => {
       sentInvites.value.delete(response.joinerId)
     }
   })
+})
+
+onUnmounted(() => {
+  lobbyChannel?.unsubscribe()
 })
 </script>
 

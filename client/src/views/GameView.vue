@@ -28,6 +28,7 @@ const inputText = ref('')
 const inputError = ref('')
 const versesLoaded = ref(false)
 const error = ref('')
+const opponentLeft = ref(false)
 
 interface FeedEntry {
   playerId: string
@@ -165,7 +166,7 @@ onMounted(async () => {
   room = joinGameRoom(ownUserId.value, ownName.value, gameId, {
     onPeerJoin: () => {},
     onPeerLeave: () => {
-      leaveGame()
+      opponentLeft.value = true
     },
     onMessage: (msg, senderId) => {
       if (senderId === ownUserId.value) return
@@ -199,6 +200,12 @@ onUnmounted(() => {
 
 <template>
   <div v-if="error" class="error">{{ error }}</div>
+  <div v-else-if="opponentLeft" class="game">
+    <div class="header">
+      <button class="leave-btn" @click="leaveGame">← Lobby</button>
+      <div class="status">Opponent has left the game</div>
+    </div>
+  </div>
   <div v-else class="game">
     <div class="header">
       <button class="leave-btn" @click="leaveGame">← Lobby</button>
