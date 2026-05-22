@@ -8,6 +8,8 @@ interface VerseCardVerse {
   timeLeft: number
   senderId: string
   progress: number
+  resolved?: 'solved' | 'failed' | 'partial'
+  resolvedRef?: string
 }
 
 defineProps<{
@@ -27,21 +29,20 @@ const progressIcon: Record<number, string> = {
 <template>
   <div
     class="verse-card"
-    :class="{ expanded: isExpanded }"
+    :class="{ expanded: isExpanded, solved: verse.resolved === 'solved', failed: verse.resolved === 'failed', partial: verse.resolved === 'partial' }"
     @click="onToggle"
     tabindex="0"
     @keydown.enter="onToggle"
     @keydown.space.prevent="onToggle"
   >
     <div class="card-header">
-      <span class="icon">{{ progressIcon[verse.progress] || '📦' }}</span>
-      <span class="timer" :class="{ urgent: verse.timeLeft <= 3 }">
-        {{ verse.timeLeft }}s
-      </span>
+      <span class="icon">{{ verse.resolved === 'solved' ? '✅' : verse.resolved === 'failed' ? '❌' : verse.resolved === 'partial' ? (verse.progress === 3 ? '⭐⭐' : '⭐') : progressIcon[verse.progress] || '📦' }}</span>
+      <span v-if="verse.resolved" class="resolved-ref" :class="verse.resolved">{{ verse.resolvedRef }}</span>
+      <span v-else class="timer" :class="{ urgent: verse.timeLeft <= 3 }">{{ verse.timeLeft }}s</span>
     </div>
     <div v-if="isExpanded" class="card-body">
       <p class="verse-text">{{ verse.text }}</p>
-      <div class="ref-hint">Identify this verse&rsquo;s reference to score 5 points</div>
+      <div v-if="!verse.resolved" class="ref-hint">Identify this verse&rsquo;s reference to score 5 points</div>
     </div>
   </div>
 </template>
@@ -67,6 +68,35 @@ const progressIcon: Record<number, string> = {
   border-color: rgba(201, 168, 76, 0.35);
   box-shadow: 0 0 16px rgba(201, 168, 76, 0.08);
 }
+
+.verse-card.solved {
+  border-color: rgba(34, 197, 94, 0.4);
+  background: rgba(34, 197, 94, 0.06);
+  cursor: default;
+}
+
+.verse-card.failed {
+  border-color: rgba(239, 68, 68, 0.4);
+  background: rgba(239, 68, 68, 0.06);
+  cursor: default;
+}
+
+.verse-card.partial {
+  border-color: rgba(201, 168, 76, 0.4);
+  background: rgba(201, 168, 76, 0.06);
+  cursor: default;
+}
+
+.resolved-ref {
+  font-family: var(--mono, monospace);
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.resolved-ref.solved { color: #22c55e; }
+.resolved-ref.failed { color: #ef4444; }
+.resolved-ref.partial { color: #c9a84c; }
 
 .card-header {
   display: flex;

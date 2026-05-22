@@ -16,6 +16,8 @@ export interface IncomingVerse {
   timeLeft: number
   senderId: string
   progress: number
+  resolved?: 'solved' | 'failed' | 'partial'
+  resolvedRef?: string
 }
 
 interface FeedEntry {
@@ -128,7 +130,14 @@ function handleAttemptRef(ref: { book: string; chapter: number; verse: number })
     ref.chapter === ev.chapter &&
     ref.verse === ev.verse
   ) {
-    incomingVerses.value = incomingVerses.value.filter(v => v.verseId !== ev.verseId)
+    const solvedVerse = incomingVerses.value.find(v => v.verseId === ev.verseId)
+    if (solvedVerse) {
+      solvedVerse.resolved = 'solved'
+      solvedVerse.resolvedRef = `${ev.book} ${ev.chapter}:${ev.verse}`
+      setTimeout(() => {
+        incomingVerses.value = incomingVerses.value.filter(v => v.verseId !== ev.verseId)
+      }, 5000)
+    }
     const newScore = (scores.value[ownUserId.value] ?? 0) + 5
     scores.value = { ...scores.value, [ownUserId.value]: newScore }
     updateFeedEntry(ev.verseId, ev.book, ev.chapter, ev.verse, 4, ownUserId.value)
@@ -244,12 +253,12 @@ onMounted(async () => {
 
   timerInterval = setInterval(() => {
     for (const v of incomingVerses.value) {
-      v.timeLeft--
+      if (!v.resolved) v.timeLeft--
     }
     for (const f of feed.value) {
       if (f.timeLeft > 0) f.timeLeft--
     }
-    const expired = incomingVerses.value.filter(v => v.timeLeft <= 0)
+    const expired = incomingVerses.value.filter(v => !v.resolved && v.timeLeft <= 0)
     for (const v of expired) {
       const p = v.progress ?? 0
       if (p === 0) {
@@ -281,8 +290,14 @@ onMounted(async () => {
           clears: [{ verseId: v.verseId, book: v.book, chapter: v.chapter, verse: v.verse, progress: 3 }],
         })
       }
+      v.resolved = p === 2 || p === 3 ? 'partial' : 'failed'
+      v.resolvedRef = `${v.book} ${v.chapter}:${v.verse}`
+      const id = v.verseId
+      setTimeout(() => {
+        incomingVerses.value = incomingVerses.value.filter(x => x.verseId !== id)
+      }, 5000)
     }
-    incomingVerses.value = incomingVerses.value.filter(v => v.timeLeft > 0)
+    incomingVerses.value = incomingVerses.value.filter(v => v.timeLeft > 0 || v.resolved)
   }, 1000)
 })
 
