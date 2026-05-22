@@ -3,9 +3,11 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { signInAnon } from '../composables/useSupabase'
 import { joinGameRoom, type GamePeer } from '../composables/useGame'
-import { loadVerses, findVerse, verseTimeLimit, parseBookInput, getVerseText, isValidRef } from '../game/verses'
+import { loadVerses, getVerseText, isValidRef, verseTimeLimit } from '../game/verses'
+import IncomingVerseCard from '../components/IncomingVerseCard.vue'
+import VerseReferenceModal from '../components/VerseReferenceModal.vue'
 
-interface IncomingVerse {
+export interface IncomingVerse {
   verseId: string
   book: string
   chapter: number
@@ -13,6 +15,17 @@ interface IncomingVerse {
   text: string
   timeLeft: number
   senderId: string
+  progress: number
+}
+
+interface FeedEntry {
+  verseId: string
+  playerId: string
+  book: string
+  chapter: number
+  verse: number
+  progress: number
+  timeLeft: number
 }
 
 const route = useRoute()
@@ -24,20 +37,17 @@ const ownName = ref('')
 const peers = ref<GamePeer[]>([])
 const incomingVerses = ref<IncomingVerse[]>([])
 const scores = ref<Record<string, number>>({})
-const inputText = ref('')
-const inputError = ref('')
 const versesLoaded = ref(false)
 const error = ref('')
 const opponentLeft = ref(false)
 
-interface FeedEntry {
-  playerId: string
-  book: string
-  chapter: number
-  verse: number
-}
-
 const feed = ref<FeedEntry[]>([])
+const expandedVerseId = ref<string | null>(null)
+const showPopup = ref(false)
+const popupMode = ref<'send' | 'attempt'>('send')
+const showFeed = ref(false)
+const attemptError = ref('')
+const sentToast = ref('')
 
 let room: ReturnType<typeof joinGameRoom> | null = null
 let timerInterval: number | undefined
@@ -52,88 +62,130 @@ const myScore = computed(() => scores.value[ownUserId.value] ?? 0)
 const oppScore = computed(() => (opponent.value ? scores.value[opponent.value.userId] ?? 0 : 0))
 
 const isReady = computed(() => peers.value.length >= 2)
+const expandedVerse = computed(() =>
+  incomingVerses.value.find(v => v.verseId === expandedVerseId.value) ?? null
+)
 
-function handleSubmit() {
-  const text = inputText.value.trim()
-  if (!text || !room || !versesLoaded.value) return
-  inputError.value = ''
+function feedIcon(progress: number): string {
+  if (progress === 0) return '⏳'
+  if (progress === 1) return '❌'
+  if (progress === 2) return '⭐'
+  if (progress === 3) return '⭐⭐'
+  return '✅'
+}
 
-  const parsed = parseBookInput(text)
-  if (parsed) {
-    let matching: IncomingVerse[]
-    let points: number
-    let label: string
+function refDisplay(entry: FeedEntry): string {
+  const full = `${entry.book} ${entry.chapter}:${entry.verse}`
+  if (entry.playerId !== ownUserId.value) return full
+  if (entry.timeLeft <= 0) return full
+  if (entry.progress >= 4) return full
+  if (entry.progress === 3) return `${entry.book} ${entry.chapter}:?`
+  if (entry.progress === 2) return `${entry.book} ?:?`
+  return '? ?:?'
+}
 
-    if (parsed.verse) {
-      matching = incomingVerses.value.filter(
-        v => v.book.toLowerCase() === parsed.book.toLowerCase()
-          && v.chapter === parsed.chapter
-          && v.verse === parsed.verse
-      )
-      points = 5
-      label = `${parsed.book} ${parsed.chapter}:${parsed.verse}`
-    } else if (parsed.chapter) {
-      matching = incomingVerses.value.filter(
-        v => v.book.toLowerCase() === parsed.book.toLowerCase()
-          && v.chapter === parsed.chapter
-      )
-      points = 2
-      label = `${parsed.book} ${parsed.chapter}`
-    } else {
-      matching = incomingVerses.value.filter(
-        v => v.book.toLowerCase() === parsed.book.toLowerCase()
-      )
-      points = 1
-      label = parsed.book
-    }
+function updateFeedEntry(verseId: string, book: string, chapter: number, verse: number, progress: number, playerId: string, timeLeft: number = 0) {
+  const existing = feed.value.find(f => f.verseId === verseId)
+  if (existing) {
+    existing.progress = progress
+    if (progress >= 4) existing.timeLeft = 0
+    else if (timeLeft > 0) existing.timeLeft = timeLeft
+  } else {
+    const tl = progress >= 4 ? 0 : timeLeft
+    feed.value.push({ verseId, playerId, book, chapter, verse, progress, timeLeft: tl })
+  }
+}
 
-    if (matching.length === 0) {
-      inputError.value = `No incoming verses from ${label}`
-      inputText.value = ''
-      return
-    }
-    const ids = matching.map(v => v.verseId)
-    incomingVerses.value = incomingVerses.value.filter(v => !ids.includes(v.verseId))
-    const newScore = myScore.value + matching.length * points
+function handleSendRef(ref: { book: string; chapter: number; verse: number }) {
+  if (!room || !versesLoaded.value) return
+  const text = getVerseText(ref.book, ref.chapter, ref.verse)
+  if (!text) return
+  const verseId = crypto.randomUUID()
+  const wordCount = text.split(/\s+/).length
+  room.sendMessage({
+    type: 'verse_incoming',
+    verseId,
+    book: ref.book,
+    chapter: ref.chapter,
+    verse: ref.verse,
+    timeLeft: verseTimeLimit(wordCount),
+  })
+  showPopup.value = false
+  sentToast.value = `Sent verse ${ref.book} ${ref.chapter}:${ref.verse}`
+  setTimeout(() => { sentToast.value = '' }, 2500)
+
+  updateFeedEntry(verseId, ref.book, ref.chapter, ref.verse, 0, opponent.value?.userId ?? '', verseTimeLimit(wordCount))
+}
+
+function handleAttemptRef(ref: { book: string; chapter: number; verse: number }) {
+  attemptError.value = ''
+  if (!expandedVerse.value) {
+    showPopup.value = false
+    return
+  }
+  const ev = expandedVerse.value
+
+  if (
+    ref.book.toLowerCase() === ev.book.toLowerCase() &&
+    ref.chapter === ev.chapter &&
+    ref.verse === ev.verse
+  ) {
+    incomingVerses.value = incomingVerses.value.filter(v => v.verseId !== ev.verseId)
+    const newScore = (scores.value[ownUserId.value] ?? 0) + 5
     scores.value = { ...scores.value, [ownUserId.value]: newScore }
-    const clears: FeedEntry[] = matching.map(v => ({
-      playerId: ownUserId.value,
-      book: v.book,
-      chapter: v.chapter,
-      verse: v.verse,
-    }))
-    feed.value.push(...clears)
-    room.sendMessage({
+    updateFeedEntry(ev.verseId, ev.book, ev.chapter, ev.verse, 4, ownUserId.value)
+    room?.sendMessage({
       type: 'game_update',
       playerId: ownUserId.value,
       playerScore: newScore,
-      clears,
+      clears: [{ verseId: ev.verseId, book: ev.book, chapter: ev.chapter, verse: ev.verse, progress: 4 }],
     })
-    inputText.value = ''
-    return
+    expandedVerseId.value = null
+    showPopup.value = false
+  } else {
+    let newProgress = 1
+    let msg = ''
+    if (ref.book.toLowerCase() === ev.book.toLowerCase()) {
+      newProgress = 2
+      if (ref.chapter === ev.chapter) {
+        newProgress = 3
+        msg = 'Right chapter! 📖 (wrong verse)'
+      } else {
+        msg = 'Right book! 📓 (wrong chapter)'
+      }
+    } else {
+      msg = 'Wrong book 🎁'
+    }
+    if (newProgress > (ev.progress || 0)) {
+      const verse = incomingVerses.value.find(v => v.verseId === ev.verseId)
+      if (verse) verse.progress = newProgress
+      updateFeedEntry(ev.verseId, ev.book, ev.chapter, ev.verse, newProgress, ownUserId.value)
+      room?.sendMessage({
+        type: 'game_update',
+        playerId: ownUserId.value,
+        playerScore: scores.value[ownUserId.value] ?? 0,
+        clears: [{ verseId: ev.verseId, book: ev.book, chapter: ev.chapter, verse: ev.verse, progress: newProgress }],
+      })
+    }
+    showPopup.value = false
+    attemptError.value = msg
+    setTimeout(() => { attemptError.value = '' }, 3000)
   }
+}
 
-  const words = text.split(/\s+/).filter(w => w.length > 0)
-  if (words.length < 3) {
-    inputError.value = 'Type at least 3 words to send a verse'
-    return
-  }
+function sendVerse() {
+  popupMode.value = 'send'
+  showPopup.value = true
+}
 
-  const match = findVerse(text)
-  if (!match) {
-    inputError.value = 'Verse not found'
-    return
-  }
+function attemptVerse() {
+  if (!expandedVerse.value) return
+  popupMode.value = 'attempt'
+  showPopup.value = true
+}
 
-  room.sendMessage({
-    type: 'verse_incoming',
-    verseId: crypto.randomUUID(),
-    book: match.b,
-    chapter: match.c,
-    verse: match.v,
-    timeLeft: verseTimeLimit(words.length),
-  })
-  inputText.value = ''
+function toggleVerse(id: string) {
+  expandedVerseId.value = expandedVerseId.value === id ? null : id
 }
 
 function leaveGame() {
@@ -172,11 +224,19 @@ onMounted(async () => {
       if (senderId === ownUserId.value) return
       if (msg.type === 'verse_incoming') {
         if (!isValidRef(msg.book, msg.chapter, msg.verse)) return
-        incomingVerses.value.push({ ...msg, text: getVerseText(msg.book, msg.chapter, msg.verse) ?? '', senderId })
+        incomingVerses.value.push({
+          ...msg,
+          text: getVerseText(msg.book, msg.chapter, msg.verse) ?? '',
+          senderId,
+          progress: 0,
+        })
+        updateFeedEntry(msg.verseId, msg.book, msg.chapter, msg.verse, 0, ownUserId.value, msg.timeLeft)
       } else if (msg.type === 'game_update') {
         scores.value = { ...scores.value, [msg.playerId]: msg.playerScore }
         const valid = msg.clears.filter(c => isValidRef(c.book, c.chapter, c.verse))
-        feed.value.push(...valid.map(c => ({ ...c, playerId: msg.playerId })))
+        for (const c of valid) {
+          updateFeedEntry(c.verseId, c.book, c.chapter, c.verse, c.progress ?? 4, msg.playerId)
+        }
       }
     },
     onPeersUpdate: (p) => {
@@ -187,6 +247,42 @@ onMounted(async () => {
   timerInterval = setInterval(() => {
     for (const v of incomingVerses.value) {
       v.timeLeft--
+    }
+    for (const f of feed.value) {
+      if (f.timeLeft > 0) f.timeLeft--
+    }
+    const expired = incomingVerses.value.filter(v => v.timeLeft <= 0)
+    for (const v of expired) {
+      const p = v.progress ?? 0
+      if (p === 0) {
+        updateFeedEntry(v.verseId, v.book, v.chapter, v.verse, 1, ownUserId.value)
+        room?.sendMessage({
+          type: 'game_update',
+          playerId: ownUserId.value,
+          playerScore: scores.value[ownUserId.value] ?? 0,
+          clears: [{ verseId: v.verseId, book: v.book, chapter: v.chapter, verse: v.verse, progress: 1 }],
+        })
+      } else if (p === 2) {
+        const newScore = (scores.value[ownUserId.value] ?? 0) + 1
+        scores.value = { ...scores.value, [ownUserId.value]: newScore }
+        updateFeedEntry(v.verseId, v.book, v.chapter, v.verse, 2, ownUserId.value)
+        room?.sendMessage({
+          type: 'game_update',
+          playerId: ownUserId.value,
+          playerScore: newScore,
+          clears: [{ verseId: v.verseId, book: v.book, chapter: v.chapter, verse: v.verse, progress: 2 }],
+        })
+      } else if (p === 3) {
+        const newScore = (scores.value[ownUserId.value] ?? 0) + 2
+        scores.value = { ...scores.value, [ownUserId.value]: newScore }
+        updateFeedEntry(v.verseId, v.book, v.chapter, v.verse, 3, ownUserId.value)
+        room?.sendMessage({
+          type: 'game_update',
+          playerId: ownUserId.value,
+          playerScore: newScore,
+          clears: [{ verseId: v.verseId, book: v.book, chapter: v.chapter, verse: v.verse, progress: 3 }],
+        })
+      }
     }
     incomingVerses.value = incomingVerses.value.filter(v => v.timeLeft > 0)
   }, 1000)
@@ -199,67 +295,102 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div v-if="error" class="error">{{ error }}</div>
+  <div v-if="error" class="error-state">{{ error }}</div>
+
   <div v-else-if="opponentLeft" class="game">
     <div class="header">
-      <button class="leave-btn" @click="leaveGame">← Lobby</button>
-      <div class="status">Opponent has left the game</div>
+      <button class="back-btn" @click="leaveGame">← Lobby</button>
+      <div class="status-text">Opponent has left the game</div>
     </div>
   </div>
+
   <div v-else class="game">
+    <!-- Header -->
     <div class="header">
-      <button class="leave-btn" @click="leaveGame">← Lobby</button>
+      <button class="back-btn" @click="leaveGame">← Lobby</button>
       <div class="scores">
         <span class="score you">{{ myScore }}</span>
         <span class="vs">vs</span>
         <span class="score opponent">{{ oppScore }}</span>
         <span class="opp-name">{{ opponentName }}</span>
       </div>
-      <div class="status">
-        <span v-if="!isReady">Waiting for opponent...</span>
+      <div class="header-right">
+        <span v-if="!isReady" class="waiting">Waiting…</span>
+        <button class="feed-toggle" @click="showFeed = !showFeed" title="Toggle feed">
+          {{ showFeed ? '✕' : '📋' }}
+        </button>
       </div>
     </div>
 
-    <div class="main-content">
-      <div class="verses-list">
-        <div v-if="incomingVerses.length === 0" class="empty">
+    <!-- Main area -->
+    <div class="main">
+      <div class="verses-area">
+        <div v-if="!isReady" class="placeholder">
+          Waiting for opponent to join…
+        </div>
+        <div v-else-if="incomingVerses.length === 0" class="placeholder">
           No incoming verses yet
         </div>
-        <div
-          v-for="v in incomingVerses"
-          :key="v.verseId"
-          class="verse-entry"
-        >
-          <span class="text">{{ v.text }}</span>
-          <span class="timer" :class="{ urgent: v.timeLeft <= 3 }">{{ v.timeLeft }}s</span>
+        <div v-else class="verses-list">
+          <IncomingVerseCard
+            v-for="v in incomingVerses"
+            :key="v.verseId"
+            :verse="v"
+            :is-expanded="expandedVerseId === v.verseId"
+            :on-toggle="() => toggleVerse(v.verseId)"
+          />
         </div>
       </div>
 
-      <div class="feed-panel">
-        <div class="feed-title">Feed</div>
-        <div v-if="feed.length === 0" class="empty">No clears yet</div>
-        <div v-for="(entry, i) in feed" :key="i" class="feed-entry">
+      <!-- Feed panel (desktop sidebar / mobile overlay) -->
+      <div class="feed-area" :class="{ 'feed-open': showFeed }">
+        <div class="feed-header">
+          <span class="feed-title">Feed</span>
+          <button class="feed-close" @click="showFeed = false" title="Close feed">✕</button>
+        </div>
+        <div v-if="feed.length === 0" class="feed-empty">No events yet</div>
+        <div v-for="entry in feed" :key="entry.verseId" class="feed-entry">
           <span class="who" :class="{ me: entry.playerId === ownUserId }">
             {{ entry.playerId === ownUserId ? 'You' : 'Them' }}
           </span>
-          <span class="ref">({{ entry.book }} {{ entry.chapter }}:{{ entry.verse }})</span>
+          <span class="feed-icon">{{ feedIcon(entry.progress) }}</span>
+          <span v-if="entry.timeLeft > 0" class="timer">({{ entry.timeLeft }}s)</span>
+          <span class="ref">{{ refDisplay(entry) }}</span>
         </div>
+      </div>
+      <div v-if="showFeed" class="feed-overlay-bg" @click="showFeed = false" />
+    </div>
+
+    <!-- Bottom buttons -->
+    <div class="buttons-div">
+      <div v-if="attemptError" class="attempt-error">{{ attemptError }}</div>
+      <Transition name="toast">
+        <div v-if="sentToast" class="sent-toast">{{ sentToast }}</div>
+      </Transition>
+      <div class="buttons-row">
+        <button
+          class="btn btn-send"
+          :disabled="!isReady"
+          @click="sendVerse"
+        >
+          Send
+        </button>
+        <button
+          v-if="expandedVerse"
+          class="btn btn-attempt"
+          @click="attemptVerse"
+        >
+          Attempt
+        </button>
       </div>
     </div>
 
-    <div class="input-area">
-      <div v-if="inputError" class="input-error">{{ inputError }}</div>
-      <div class="input-row">
-        <input
-          v-model="inputText"
-          @keyup.enter="handleSubmit"
-          placeholder="Type a verse or book name..."
-          :disabled="!isReady"
-          autofocus
-        />
-        <button @click="handleSubmit" :disabled="!isReady">Send</button>
-      </div>
-    </div>
+    <!-- Verse reference popup -->
+    <VerseReferenceModal
+      :show="showPopup"
+      @confirm="popupMode === 'send' ? handleSendRef($event) : handleAttemptRef($event)"
+      @cancel="showPopup = false"
+    />
   </div>
 </template>
 
@@ -268,27 +399,35 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  font-family: var(--sans);
+  background: #0f0f1a;
+  color: #e8e0d0;
+  font-family: var(--sans, system-ui, sans-serif);
 }
 
-.error {
-  padding: 2rem;
-  text-align: center;
-  color: #ef4444;
-}
-
+/* --- Header --- */
 .header {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.75rem;
   padding: 0.5rem 1rem;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid rgba(201, 168, 76, 0.15);
   flex-shrink: 0;
 }
 
-.leave-btn {
+.back-btn {
   padding: 0.3rem 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  color: rgba(232, 224, 208, 0.7);
+  font-size: 0.85rem;
   cursor: pointer;
+  transition: 0.15s;
+}
+
+.back-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #e8e0d0;
 }
 
 .scores {
@@ -300,67 +439,128 @@ onUnmounted(() => {
 }
 
 .score {
-  font-family: var(--mono);
+  font-family: var(--mono, monospace);
   font-size: 1.5rem;
   font-weight: 600;
 }
 
-.score.you {
-  color: var(--accent);
-}
-
-.score.opponent {
-  color: var(--text-h);
-}
+.score.you { color: #c9a84c; }
+.score.opponent { color: #e8e0d0; }
 
 .vs {
-  color: var(--text);
-  font-size: 0.9rem;
+  color: rgba(232, 224, 208, 0.35);
+  font-size: 0.85rem;
 }
 
 .opp-name {
-  color: var(--text);
-  font-size: 0.85rem;
-  margin-left: 0.25rem;
+  color: rgba(232, 224, 208, 0.5);
+  font-size: 0.8rem;
+  margin-left: 0.15rem;
 }
 
-.status {
-  min-width: 10rem;
-  text-align: right;
-  color: var(--text);
-  font-size: 0.85rem;
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
-.main-content {
+.waiting {
+  font-size: 0.8rem;
+  color: rgba(232, 224, 208, 0.5);
+  font-style: italic;
+}
+
+.feed-toggle {
+  padding: 0.3rem 0.5rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 1rem;
+  cursor: pointer;
+  line-height: 1;
+  display: none;
+}
+
+.status-text {
+  flex: 1;
+  text-align: center;
+  font-size: 0.9rem;
+  color: rgba(232, 224, 208, 0.6);
+  font-style: italic;
+}
+
+/* --- Main area --- */
+.main {
   flex: 1;
   display: flex;
   overflow: hidden;
+  position: relative;
+}
+
+.verses-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1rem;
+}
+
+.placeholder {
+  text-align: center;
+  padding: 2rem 1rem;
+  color: rgba(232, 224, 208, 0.4);
+  font-style: italic;
+  font-size: 0.9rem;
 }
 
 .verses-list {
-  flex: 1;
-  overflow-y: auto;
-  padding: 0.5rem 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 600px;
+  margin: 0 auto;
 }
 
-.feed-panel {
+/* --- Feed --- */
+.feed-area {
   width: 260px;
   flex-shrink: 0;
   overflow-y: auto;
   padding: 0.5rem;
-  border-left: 1px solid var(--border);
+  border-left: 1px solid rgba(201, 168, 76, 0.1);
   display: flex;
   flex-direction: column;
 }
 
-.feed-title {
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--text);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
+.feed-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 0.25rem 0.5rem;
   margin-bottom: 0.25rem;
+}
+
+.feed-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(232, 224, 208, 0.5);
+}
+
+.feed-close {
+  display: none;
+  background: none;
+  border: none;
+  color: rgba(232, 224, 208, 0.5);
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.feed-empty {
+  text-align: center;
+  padding: 1rem 0.5rem;
+  color: rgba(232, 224, 208, 0.3);
+  font-style: italic;
+  font-size: 0.8rem;
 }
 
 .feed-entry {
@@ -368,7 +568,7 @@ onUnmounted(() => {
   align-items: baseline;
   gap: 0.35rem;
   padding: 0.25rem 0.5rem;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   animation: slide-in 0.2s ease-out;
 }
 
@@ -377,118 +577,152 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.feed-entry .who.me {
-  color: var(--accent);
+.feed-entry .who.me { color: #c9a84c; }
+
+.feed-entry .feed-icon {
+  flex-shrink: 0;
+  font-size: 0.8rem;
 }
 
 .feed-entry .ref {
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  color: var(--text);
+  font-family: var(--mono, monospace);
+  font-size: 0.75rem;
+  color: rgba(232, 224, 208, 0.5);
 }
 
-.empty {
-  text-align: center;
-  color: var(--text);
-  padding: 2rem 0.5rem;
-  font-style: italic;
-  font-size: 0.85rem;
+.feed-overlay-bg {
+  display: none;
 }
 
-.verse-entry {
+/* --- Buttons bottom --- */
+.buttons-div {
+  flex-shrink: 0;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid rgba(201, 168, 76, 0.15);
   display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-  padding: 0.5rem;
-  margin-bottom: 0.25rem;
-  border-radius: 6px;
-  background: var(--code-bg);
-  animation: slide-in 0.2s ease-out;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.attempt-error {
+  font-size: 0.8rem;
+  color: #ef4444;
+  text-align: center;
+}
+
+.sent-toast {
+  font-size: 0.85rem;
+  color: #fff;
+  text-align: center;
+  padding: 0.25rem 0;
+}
+
+.toast-enter-active,
+.toast-leave-active {
+  transition: opacity 0.25s ease;
+}
+
+.toast-enter-from,
+.toast-leave-to {
+  opacity: 0;
+}
+
+.buttons-row {
+  display: flex;
+  gap: 0.75rem;
+  justify-content: center;
+}
+
+.btn {
+  padding: 0.6rem 2rem;
+  border-radius: 10px;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  font-family: inherit;
+  border: none;
+}
+
+.btn-send {
+  background: #c9a84c;
+  color: #1a1a2e;
+}
+
+.btn-send:hover:not(:disabled) {
+  background: #dbb95c;
+  box-shadow: 0 0 20px rgba(201, 168, 76, 0.25);
+}
+
+.btn-send:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.btn-attempt {
+  border: 1px solid rgba(201, 168, 76, 0.4);
+  background: rgba(201, 168, 76, 0.12);
+  color: #c9a84c;
+}
+
+.btn-attempt:hover {
+  background: rgba(201, 168, 76, 0.2);
+  box-shadow: 0 0 16px rgba(201, 168, 76, 0.15);
+}
+
+.error-state {
+  padding: 2rem;
+  text-align: center;
+  color: #ef4444;
+}
+
+/* --- Mobile --- */
+@media (max-width: 768px) {
+  .feed-toggle {
+    display: inline-flex;
+  }
+
+  .feed-area {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 280px;
+    z-index: 200;
+    background: #0f0f1a;
+    border-left: 1px solid rgba(201, 168, 76, 0.25);
+    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.4);
+    transform: translateX(100%);
+    transition: transform 0.2s ease;
+    display: flex;
+  }
+
+  .feed-area.feed-open {
+    transform: translateX(0);
+  }
+
+  .feed-close {
+    display: inline-flex;
+  }
+
+  .feed-overlay-bg {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 199;
+    background: rgba(0, 0, 0, 0.5);
+  }
 }
 
 @keyframes slide-in {
   from {
     opacity: 0;
-    transform: translateY(-8px);
+    transform: translateY(-4px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
   }
-}
-
-.text {
-  flex: 1;
-  font-size: 0.9rem;
-  line-height: 1.4;
-  color: var(--text-h);
-}
-
-.timer {
-  font-family: var(--mono);
-  font-size: 0.8rem;
-  color: var(--text);
-  flex-shrink: 0;
-  min-width: 2rem;
-  text-align: right;
-}
-
-.timer.urgent {
-  color: #ef4444;
-  font-weight: 600;
-}
-
-.input-area {
-  flex-shrink: 0;
-  padding: 0.5rem 1rem;
-  border-top: 1px solid var(--border);
-}
-
-.input-error {
-  color: #ef4444;
-  font-size: 0.85rem;
-  margin-bottom: 0.25rem;
-  padding: 0.25rem 0;
-}
-
-.input-row {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.input-row input {
-  flex: 1;
-  padding: 0.5rem;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  font-size: 0.95rem;
-  background: var(--bg);
-  color: var(--text-h);
-  outline: none;
-}
-
-.input-row input:focus {
-  border-color: var(--accent);
-}
-
-.input-row button {
-  padding: 0.5rem 1rem;
-  border: 1px solid var(--accent);
-  border-radius: 4px;
-  background: var(--accent-bg);
-  color: var(--accent);
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.input-row button:hover:not(:disabled) {
-  background: var(--accent);
-  color: #fff;
-}
-
-.input-row button:disabled,
-.input-row input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 </style>

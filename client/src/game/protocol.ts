@@ -19,9 +19,11 @@ export const VerseIncomingSchema = z.object({
 })
 
 export const ClearEntrySchema = z.object({
+  verseId: z.string().max(64),
   book: BookName,
   chapter: z.number().int().positive(),
   verse: z.number().int().positive(),
+  progress: z.number().int().min(0).max(4).default(4),
 })
 
 export const GameUpdateSchema = z.object({
