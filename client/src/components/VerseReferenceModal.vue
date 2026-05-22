@@ -7,6 +7,7 @@ import {
   searchBooks,
   getChapterCount,
   getVerseCount,
+  getVerseText,
   resolveBook,
 } from '../game/verses'
 
@@ -62,6 +63,11 @@ const preview = computed(() => {
 const canConfirm = computed(() =>
   selectedBook.value !== null && selectedChapter.value !== null && selectedVerse.value !== null
 )
+
+const verseText = computed(() => {
+  if (!selectedBook.value || !selectedChapter.value || !selectedVerse.value) return ''
+  return getVerseText(selectedBook.value, selectedChapter.value, selectedVerse.value) ?? ''
+})
 
 const otBooks = computed(() =>
   filteredBooks.value.filter(b => BOOK_TESTAMENT[b] === 'ot')
@@ -295,6 +301,10 @@ onUnmounted(() => {
               >
                 {{ v }}
               </button>
+            </div>
+            <div v-if="verseText" class="verse-preview">
+              <div class="verse-preview-ref">{{ preview }}</div>
+              <div class="verse-preview-text">{{ verseText }}</div>
             </div>
           </div>
         </div>
@@ -614,6 +624,31 @@ onUnmounted(() => {
 .modal-enter-from,
 .modal-leave-to {
   opacity: 0;
+}
+
+.verse-preview {
+  margin-top: 0.75rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid rgba(201, 168, 76, 0.2);
+  border-radius: 10px;
+  background: rgba(201, 168, 76, 0.06);
+  animation: fade-slide-in 0.25s ease-out;
+}
+
+.verse-preview-ref {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: #c9a84c;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.35rem;
+}
+
+.verse-preview-text {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: rgba(232, 224, 208, 0.85);
+  font-style: italic;
 }
 
 @keyframes fade-slide-in {
