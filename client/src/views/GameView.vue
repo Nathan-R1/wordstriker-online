@@ -297,7 +297,7 @@ onMounted(async () => {
 
   if (isSp.value) {
     addAiVerse()
-    aiTimer = setInterval(addAiVerse, 5000)
+    aiTimer = setInterval(addAiVerse, 15000)
     return
   }
 
